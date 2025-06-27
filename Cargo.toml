@@ -1,10 +1,21 @@
 [package]
 name = "hosts-manager"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
+
+[package.metadata.bundle]
+name = "HostsManager"
+identifier = "com.bruinen.hosts-manager"
+version = "0.1.0"
+icon = ["assets/icon.icns"]
+category = "Utility"
 
 [dependencies]
 iced = { version = "0.13.1", features = ["advanced"] }
 dns-lookup = "2.0.4"
-
-
+rusqlite = { version = "0.36.0", features = ["bundled"] }
+uuid = { version = "1.9", features = ["v4", "fast-rng", "macro-diagnostics"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "6.0.0"
+rfd = "0.15.3"
