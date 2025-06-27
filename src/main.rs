@@ -1,9 +1,5 @@
-use iced::{
-    Element, Length,
-};
-use iced::widget::{column, text, button, text_input, row, scrollable};
-use iced::{Theme,Task}; // Importazioni aggiornate
-
+use iced::widget::{column,Text, text, button, text_input, row, scrollable};
+use iced::{Theme,Task,color,Element, Length, Renderer}; // Importazioni aggiornate
 use std::fs;
 use std::fs::File;
 use std::io::Write;
@@ -39,6 +35,7 @@ pub struct MyApp { // Deve essere pub
     pub editing_index: Option<usize>,
     pub editing_ip: String,
     pub editing_hostname: String,
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +114,7 @@ fn write_hosts_entries_to_file(lines: &[Line]) -> Result<(), String> {
 }
 
 fn update(state: &mut MyApp, message: Message) -> Task<Message> { // Nuova firma!
+    state.error_message = None;
     match message {
         Message::ButtonPressed => {
             let hostname = state.input_text.clone();
@@ -136,8 +134,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> { // Nuova firma
                         Message::WriteToHosts(hostname, ips.first().map(|ip| ip.to_string()))
                     }
                     Err(e) => {
-                        println!("{}", e);
-                        Message::NoOp
+                        Message::SaveError(e)
                     }
                 }
             });
@@ -165,13 +162,13 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> { // Nuova firma
                             ip: ip.clone(),
                             hostname: hostname.clone(),
                             comment: None,
-                        }));                       
+                        }));
                     }
-                    Err(e) => println!("Errore nella scrittura del file hosts: {}", e),
+                    Err(e) =>state.error_message = Some(format!("Errore nella scrittura del file hosts: {}", e)),
                 }
-                
+
             } else {
-                println!("Impossibile trovare un IP per l'hostname fornito.");
+                state.error_message = Some(String::from("Impossibile trovare un IP per l'hostname fornito."));
             }
         }
         Message::DeleteEntry(index) => {
@@ -239,16 +236,24 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> { // Nuova firma
         }
         Message::NoOp => {}
         Message::SaveSuccess => {
+            state.error_message = None; // Rimuovi l'errore in caso di successo
             println!("File hosts salvato con successo!");
         }
         Message::SaveError(e) => {
-            println!("Errore nel salvataggio del file hosts: {}", e);
+            state.error_message = Some(e);
         }
     }
     Task::none()
 }
 
 fn view(state: &MyApp) -> Element<Message> { // Nuova firma!
+    let error_label: Text<'_, Theme, Renderer> = match &state.error_message {
+        Some(msg) => text(msg)
+            .size(16)
+            .color(color!(0xff0000)), // Testo rosso
+        None => text(""), // Se non c'è errore, l'etichetta è vuota
+    };
+
     let entries_list: Vec<Element<Message>> = state.file_lines.iter().enumerate().filter_map(|(index, line)| {
         match line {
             Line::Entry(entry) => {
@@ -297,6 +302,7 @@ fn view(state: &MyApp) -> Element<Message> { // Nuova firma!
             button("Inserisci").on_press(Message::ButtonPressed),
         ]
         .spacing(10),
+        error_label,
         text("Record nel file hosts:").size(20),
         scrollable_entries,
     ]
@@ -318,6 +324,7 @@ pub fn main() -> iced::Result {
         editing_index: None,
         editing_ip: String::new(),
         editing_hostname: String::new(),
+        error_message: None,
     };
 
     // Avviamo l'applicazione
