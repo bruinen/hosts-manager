@@ -1,10 +1,10 @@
 [package]
-name = "hostname-manager"
+name = "hosts-manager"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.13.1", features = ["advanced"] } # Aggiungi la feature "advanced"
+iced = { version = "0.13.1", features = ["advanced"] }
 dns-lookup = "2.0.4"
 
 
