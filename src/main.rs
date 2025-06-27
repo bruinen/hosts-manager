@@ -1,24 +1,23 @@
 use iced::{
-    executor, Element, Theme, Settings, Length,
+    Element, Length,
 };
 use iced::widget::{column, text, button, text_input, row, scrollable};
-use iced::Color;
+use iced::{Theme,Task}; // Importazioni aggiornate
 
 use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::fs::OpenOptions;
-use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct HostEntry {
+pub struct HostEntry {
     ip: String,
     hostname: String,
     comment: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-enum Message {
+pub enum Message { // Deve essere pub
     ButtonPressed,
     InputChanged(String),
     WriteToHosts(String, Option<String>),
@@ -33,16 +32,17 @@ enum Message {
     SaveError(String),
 }
 
-struct MyApp {
-    input_text: String,
-    file_lines: Vec<Line>,
-    editing_index: Option<usize>,
-    editing_ip: String,
-    editing_hostname: String,
+#[derive(Debug, Default, Clone)] // Aggiungi Default
+pub struct MyApp { // Deve essere pub
+    pub input_text: String,
+    pub file_lines: Vec<Line>,
+    pub editing_index: Option<usize>,
+    pub editing_ip: String,
+    pub editing_hostname: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Line {
+pub enum Line {
     Comment(String),
     Entry(HostEntry),
     Empty,
@@ -50,13 +50,10 @@ enum Line {
 
 fn load_hosts_entries() -> Vec<Line> {
     let hosts_path = "/etc/hosts";
-    let contents = match fs::read_to_string(hosts_path) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("Errore nella lettura del file hosts: {}", e);
-            return Vec::new();
-        }
-    };
+    let contents = fs::read_to_string(hosts_path).unwrap_or_else(|e| {
+        println!("Errore nella lettura del file hosts: {}", e);
+        String::new()
+    });
 
     contents.lines()
         .map(|line| {
@@ -119,34 +116,20 @@ fn write_hosts_entries_to_file(lines: &[Line]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn main() -> iced::Result {
-    iced::application("Hosts manager", update, view)
-    .theme(theme)
-    .run()
-}
-
-
-
-fn update(value: &mut u64, message: Message) {
+fn update(state: &mut MyApp, message: Message) -> Task<Message> { // Nuova firma!
     match message {
         Message::ButtonPressed => {
-            // Otteniamo l'hostname dallo stato
-            let hostname = self.input_text.clone();
+            let hostname = state.input_text.clone();
 
-            // Usiamo il comando per eseguire l'operazione in un task separato
-            // in modo da non bloccare l'interfaccia utente.
-            return Command::perform(async move {
-                // Eseguiamo la ricerca DNS in modo asincrono
+            return Task::perform(async move {
                 use dns_lookup::lookup_host;
                 let ips = lookup_host(&hostname);
 
-                // Restituiamo il risultato
                 match ips {
                     Ok(ips) => Ok((hostname, ips)),
                     Err(e) => Err(format!("Errore nel lookup: {}", e)),
                 }
             }, move |result| {
-                // Una volta completato il task, inviamo un nuovo messaggio
                 match result {
                     Ok((hostname, ips)) => {
                         println!("Trovati IP per {}: {:?}", hostname, ips);
@@ -154,60 +137,51 @@ fn update(value: &mut u64, message: Message) {
                     }
                     Err(e) => {
                         println!("{}", e);
-                        Message::NoOp // Messaggio nullo
+                        Message::NoOp
                     }
                 }
             });
         }
         Message::InputChanged(new_text) => {
-            self.input_text = new_text;
+            state.input_text = new_text;
         }
         Message::WriteToHosts(hostname, ip_option) => {
-            // Qui scriviamo nel file hosts!
             if let Some(ip) = ip_option {
                 let new_entry = format!("\n{} {}", ip, hostname);
                 let hosts_path = "/etc/hosts";
 
-                // Proviamo ad aprire il file in modalità append
                 let mut file = match OpenOptions::new().append(true).open(hosts_path) {
                     Ok(f) => f,
                     Err(e) => {
                         println!("Errore nell'apertura del file hosts: {}", e);
-                        return Command::none();
+                        return Task::none();
                     }
                 };
 
-                // Proviamo a scrivere la nuova riga
                 match file.write_all(new_entry.as_bytes()) {
                     Ok(_) => {
                         println!("Riga aggiunta con successo al file hosts: {}", new_entry);
-                        // Dopo aver scritto con successo, aggiorniamo la lista di record
-                        self.file_lines.push(Line::Entry(HostEntry {
+                        state.file_lines.push(Line::Entry(HostEntry {
                             ip: ip.clone(),
                             hostname: hostname.clone(),
                             comment: None,
-                        }));
+                        }));                       
                     }
                     Err(e) => println!("Errore nella scrittura del file hosts: {}", e),
                 }
+                
             } else {
                 println!("Impossibile trovare un IP per l'hostname fornito.");
             }
         }
         Message::DeleteEntry(index) => {
-            // Rimuoviamo l'elemento dalla lista usando l'indice
-            if index < self.file_lines.len() {
-                self.file_lines.remove(index);
+            if index < state.file_lines.len() {
+                state.file_lines.remove(index);
                 println!("Record eliminato dallo stato.");
 
-                // Clona la lista dei record per passarla al task asincrono
-                let entries_to_save = self.file_lines.clone();
+                let entries_to_save = state.file_lines.clone();
 
-                // Ora, dobbiamo salvare il nuovo stato nel file hosts
-                // Eseguiamo il salvataggio in un thread separato
-                return Command::perform(async move {
-                    // Chiamiamo la funzione per salvare la lista nel file
-                    // Passiamo la copia dei dati
+                return Task::perform(async move {
                     write_hosts_entries_to_file(&entries_to_save)
                         .map(|_| ())
                         .map_err(|e| e.to_string())
@@ -220,33 +194,31 @@ fn update(value: &mut u64, message: Message) {
             }
         }
         Message::EditEntry(index) => {
-            if let Some(Line::Entry(entry)) = self.file_lines.get(index) {
-                self.editing_index = Some(index);
-                self.editing_ip = entry.ip.clone();
-                self.editing_hostname = entry.hostname.clone();
+            if let Some(Line::Entry(entry)) = state.file_lines.get(index) {
+                state.editing_index = Some(index);
+                state.editing_ip = entry.ip.clone();
+                state.editing_hostname = entry.hostname.clone();
                 println!("Modalità di modifica attivata per il record: {} {}", entry.ip, entry.hostname);
             }
         }
         Message::EditIpChanged(new_ip) => {
-            self.editing_ip = new_ip;
+            state.editing_ip = new_ip;
         }
         Message::EditHostnameChanged(new_hostname) => {
-            self.editing_hostname = new_hostname;
+            state.editing_hostname = new_hostname;
         }
         Message::SaveEditedEntry => {
-            if let Some(index) = self.editing_index {
-                if let Some(Line::Entry(entry)) = self.file_lines.get_mut(index) {
-                    entry.ip = self.editing_ip.clone();
-                    entry.hostname = self.editing_hostname.clone();
+            if let Some(index) = state.editing_index {
+                if let Some(Line::Entry(entry)) = state.file_lines.get_mut(index) {
+                    entry.ip = state.editing_ip.clone();
+                    entry.hostname = state.editing_hostname.clone();
 
-                    // Resettiamo lo stato di modifica
-                    self.editing_index = None;
-                    self.editing_ip = String::new();
-                    self.editing_hostname = String::new();
+                    state.editing_index = None;
+                    state.editing_ip = String::new();
+                    state.editing_hostname = String::new();
 
-                    // Salviamo il file aggiornato
-                    let entries_to_save = self.file_lines.clone();
-                    return Command::perform(async move {
+                    let entries_to_save = state.file_lines.clone();
+                    return Task::perform(async move {
                         write_hosts_entries_to_file(&entries_to_save)
                             .map(|_| ())
                             .map_err(|e| e.to_string())
@@ -260,10 +232,9 @@ fn update(value: &mut u64, message: Message) {
             }
         }
         Message::CancelEdit => {
-            // Resettiamo lo stato di modifica senza salvare
-            self.editing_index = None;
-            self.editing_ip = String::new();
-            self.editing_hostname = String::new();
+            state.editing_index = None;
+            state.editing_ip = String::new();
+            state.editing_hostname = String::new();
             println!("Modifica annullata.");
         }
         Message::NoOp => {}
@@ -274,39 +245,38 @@ fn update(value: &mut u64, message: Message) {
             println!("Errore nel salvataggio del file hosts: {}", e);
         }
     }
+    Task::none()
 }
 
-fn view(value: &u64) -> Column<Message> {
-    let entries_list: Vec<Element<Message>> = self.file_lines.iter().enumerate().filter_map(|(index, line)| {
+fn view(state: &MyApp) -> Element<Message> { // Nuova firma!
+    let entries_list: Vec<Element<Message>> = state.file_lines.iter().enumerate().filter_map(|(index, line)| {
         match line {
-            Line::  Entry(entry) => {
-                if self.editing_index == Some(index) {
-                    // Se siamo in modalità modifica, mostriamo le caselle di testo
+            Line::Entry(entry) => {
+                if state.editing_index == Some(index) {
                     Some(row![
-                        text_input("IP", &self.editing_ip)
+                        text_input("IP", &state.editing_ip)
                             .on_input(Message::EditIpChanged)
                             .width(Length::Fill),
-                        text_input("Hostname", &self.editing_hostname)
+                        text_input("Hostname", &state.editing_hostname)
                             .on_input(Message::EditHostnameChanged)
                             .width(Length::Fill),
                         button("Salva").on_press(Message::SaveEditedEntry),
                         button("Annulla").on_press(Message::CancelEdit),
                     ]
-                    .spacing(10)
-                    ..align_y(iced::Alignment::Center)
-                    .padding(5)
-                    .into())
+                        .spacing(10)
+                        .align_y(iced::Alignment::Center)
+                        .padding(5)
+                        .into())
                 } else {
-                    // Se non siamo in modalità modifica, mostriamo il testo normale
                     Some(row![
                         text(format!("{} {}", entry.ip, entry.hostname)),
                         button("Modifica").on_press(Message::EditEntry(index)),
                         button("Elimina").on_press(Message::DeleteEntry(index)),
                     ]
-                    .spacing(10)
-                    .align_items(iced::Alignment::Center)
-                    .padding(5)
-                    .into())
+                        .spacing(10)
+                        .align_y(iced::Alignment::Center)
+                        .padding(5)
+                        .into())
                 }
             },
             _ => None,
@@ -316,27 +286,44 @@ fn view(value: &u64) -> Column<Message> {
     let scrollable_entries = scrollable(column(entries_list).spacing(5));
 
     let content = column![
-        text("Inserisci un hostname da bloccare nel file hosts:"),
+        text("Inserisci un hostname da scrivere nel file hosts:"),
         row![
             text_input(
                 "Es: example.com",
-                &self.input_text,
+                &state.input_text,
             )
             .on_input(Message::InputChanged)
             .width(Length::Fill),
-            button("Blocca").on_press(Message::ButtonPressed),
+            button("Inserisci").on_press(Message::ButtonPressed),
         ]
         .spacing(10),
-        text("Record nel file hosts:").size(20).style(Color::from_rgb(0.5, 0.5, 0.5)),
+        text("Record nel file hosts:").size(20),
         scrollable_entries,
     ]
-    .spacing(10)
-    .padding(10);
+        .spacing(10)
+        .padding(10);
 
     content.into()
 }
 
-
-fn theme(state: &State) -> Theme {
+fn theme(_state: &MyApp) -> Theme {
     Theme::TokyoNight
+}
+
+pub fn main() -> iced::Result {
+    // Carichiamo lo stato iniziale
+    let initial_state = MyApp {
+        input_text: String::new(),
+        file_lines: load_hosts_entries(),
+        editing_index: None,
+        editing_ip: String::new(),
+        editing_hostname: String::new(),
+    };
+
+    // Avviamo l'applicazione
+    iced::application("Hosts manager", update,view)        
+        .theme(theme)
+        .run_with(|| { // Usiamo una closure per creare e restituire lo stato
+            (initial_state,Task::none()) // Restituiamo lo stato e un Task
+        })
 }
