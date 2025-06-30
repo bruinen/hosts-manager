@@ -10,7 +10,7 @@ use dirs;
 use rusqlite::ffi::Error;
 
 // Struct per rappresentare un profilo nel database
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
     pub name: String,
@@ -76,9 +76,9 @@ pub fn get_all_profiles(conn: &Connection) -> Result<Vec<Profile>> {
     let mut stmt = conn.prepare("SELECT id, name, hosts_json, is_active FROM profiles")?;
     let profiles_iter = stmt.query_map([], |row| {
         let hosts_json: String = row.get(2)?;
-        let hosts: Vec<Line> = serde_json::from_str(&hosts_json).map_err(|e| rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e)))?;
+        let hosts: Vec<Line> = serde_json::from_str(&hosts_json) // E qui deserializzi
+            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
 
-        // Leggi il valore booleano
         let is_active_int: i64 = row.get(3)?;
         let is_active = is_active_int != 0;
 
@@ -86,7 +86,7 @@ pub fn get_all_profiles(conn: &Connection) -> Result<Vec<Profile>> {
             id: row.get(0)?,
             name: row.get(1)?,
             hosts,
-            is_active, // <-- Leggi il nuovo campo
+            is_active,
         })
     })?;
 
@@ -137,7 +137,7 @@ pub fn import_profile(conn: &Connection, profile: &Profile) -> Result<()> {
     conn.execute(
         "INSERT INTO profiles (id, name, hosts_json, is_active) VALUES (?1, ?2, ?3, ?4)",
         params![
-            Uuid::new_v4().to_string(), // Genera un nuovo ID per evitare duplicati
+            Uuid::new_v4().to_string(),
             &profile.name,
             hosts_json,
             profile.is_active as i32

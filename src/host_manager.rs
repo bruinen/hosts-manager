@@ -1,21 +1,31 @@
 use std::fs;
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::path::PathBuf; 
+use std::path::PathBuf;
+
 
 #[derive(Debug, Clone, PartialEq, Eq,Serialize, Deserialize)]
-pub struct HostEntry {
-    pub(crate) ip: String,
-    pub(crate) hostname: String,
-    pub(crate) comment: Option<String>,
+pub struct Entry {
+    pub ip: String,
+    pub hostname: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+fn default_true() -> bool {
+    true
 }
 
-#[derive(Debug, Clone, PartialEq, Eq ,Serialize,Deserialize)]
+#[derive(Debug, Clone,PartialEq, Eq, Serialize, Deserialize)]
 pub enum Line {
+    Entry(Entry),
     Comment(String),
-    Entry(HostEntry),
     Empty,
 }
+
+
+
 
 pub fn load_hosts_entries() -> Vec<Line> {
     let contents = fs::read_to_string(get_hosts_file_path()).unwrap_or_else(|e| {
@@ -27,26 +37,33 @@ pub fn load_hosts_entries() -> Vec<Line> {
             let trimmed_line = line.trim();
             if trimmed_line.is_empty() {
                 Line::Empty
-            } else if trimmed_line.starts_with('#') {
-                Line::Comment(line.to_string())
             } else {
-                let parts: Vec<&str> = line.splitn(2, '#').collect();
-                let record_part = parts[0].trim();
-                let comment_part = if parts.len() > 1 {
-                    Some(parts[1].to_string())
-                } else {
-                    None
-                };
+                let mut is_enabled = true;
+                let mut current_parse_line = trimmed_line;
 
-                let record_fields: Vec<&str> = record_part.split_whitespace().collect();
+                // 1. Controlla se la riga inizia con '#' per determinare 'enabled'
+                if current_parse_line.starts_with("#") {
+                    is_enabled = false;
+                    current_parse_line = current_parse_line.trim_start_matches('#').trim();
+                }
 
-                if record_fields.len() >= 2 {
-                    Line::Entry(HostEntry {
-                        ip: record_fields[0].to_string(),
-                        hostname: record_fields[1].to_string(),
-                        comment: comment_part,
+                // 2. Separa la parte IP/Hostname dal commento a fine riga
+                let mut parts = current_parse_line.splitn(2, '#');
+                let host_ip_hostname_part = parts.next().unwrap_or("").trim();
+                let end_comment: Option<String> = parts.next().map(|s| s.trim().to_string());
+
+                // 3. Parsa IP e Hostname dalla parte rimanente
+                let host_parts: Vec<&str> = host_ip_hostname_part.split_whitespace().collect();
+
+                if host_parts.len() >= 2 {
+                    Line::Entry(Entry {
+                        ip: host_parts[0].to_string(),
+                        hostname: host_parts[1].to_string(),
+                        enabled: is_enabled,
+                        comment: end_comment,
                     })
                 } else {
+                    // Se non è un record valido (anche se commentato), lo trattiamo come Line::Comment
                     Line::Comment(line.to_string())
                 }
             }
@@ -55,35 +72,57 @@ pub fn load_hosts_entries() -> Vec<Line> {
 }
 
 pub fn write_hosts_entries_to_file(entries: &[Line]) -> std::io::Result<()> {
-    // 1. Crea il record localhost che deve essere sempre presente
-    let localhost_entry = Line::Entry(HostEntry {
-        ip: "127.0.0.1".to_string(),
-        hostname: "localhost".to_string(),
-        comment: None,
-    });
+    // Aggiungi sempre il record localhost
+    let mut updated_entries = vec![
+        Line::Comment("".to_string()), // Aggiungi una riga vuota per chiarezza
+        Line::Entry(Entry {
+            ip: "127.0.0.1".to_string(),
+            hostname: "localhost".to_string(),
+            enabled: true,
+            comment: None, // Il localhost di default non ha un commento
+        }),
+    ];
 
-    // 2. Controlla se il record localhost è già nella lista
-    let mut updated_entries: Vec<Line> = entries.to_vec();
-    if !updated_entries.contains(&localhost_entry) {
-        // Se non è presente, aggiungilo all'inizio della lista per coerenza
-        updated_entries.insert(0, localhost_entry);
+    for line in entries {
+        // Ignora il record localhost nel file originale per evitare duplicati
+        if let Line::Entry(entry) = line {
+            if entry.ip == "127.0.0.1" && entry.hostname == "localhost" {
+                continue;
+            }
+        }
+        updated_entries.push(line.clone());
     }
 
-    // 3. Costruisci il contenuto da scrivere nel file
     let content: String = updated_entries
         .iter()
         .map(|line| match line {
-            Line::Entry(entry) => format!("{} {}\n", entry.ip, entry.hostname),
+            Line::Entry(entry) => {
+                let mut s = String::new();
+                if !entry.enabled {
+                    s.push_str("# "); // Prepend '#' if disabled
+                }
+
+                // Formatta IP e Hostname
+                s.push_str(&format!("{:<15} {}", entry.ip, entry.hostname));
+
+                // Aggiungi il commento a fine riga se presente
+                if let Some(comment_text) = &entry.comment {
+                    s.push_str(" # "); // Add " #" before the comment
+                    s.push_str(comment_text);
+                }
+                s.push_str("\n");
+                s
+            },
             Line::Comment(comment) => format!("{}\n", comment),
             Line::Empty => "\n".to_string(),
         })
         .collect();
-    
-    // 4. Scrivi il contenuto aggiornato nel file
+
     fs::write(get_hosts_file_path(), content.as_bytes())?;
 
     Ok(())
 }
+
 // Ritorna il percorso corretto del file hosts in base al sistema operativo
 fn get_hosts_file_path() -> PathBuf {
     let os = env::consts::OS;
