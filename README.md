@@ -24,8 +24,6 @@ The application is built entirely in **Rust** using the **Iced** GUI framework a
 * **Cross-Platform Compatibility**: The application is designed to work on **Windows**, **macOS**, and **Linux**. It correctly identifies the OS to manage the `hosts` file and application data paths.
 * **System Permissions Handling**: The application requires administrative privileges to modify the `hosts` file, and it handles the required permissions gracefully on each platform.
 
-![Example](assets/app.png)
-
 
 ## 🚀 Getting Started
 
