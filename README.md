@@ -65,27 +65,6 @@ Since the application needs to modify the system `hosts` file, it must be run wi
 * **Windows**:
   Navigate to the `target/release/` folder, right-click `hosts_manager.exe`, and select **"Run as administrator"**.
 
------
-
-## 📦 Cross-Platform Building
-
-For building on different operating systems, it's highly recommended to use the `cross` tool, which leverages Docker to simplify the process.
-
-1.  Install Docker and `cross`:
-    ```bash
-    cargo install cross
-    ```
-2.  Build for your desired target:
-    ```bash
-    # For Windows
-    cross build --release --target x86_64-pc-windows-msvc
-
-    # For Linux (statically linked, highly portable)
-    cross build --release --target x86_64-unknown-linux-musl
-
-    # For macOS (Intel)
-    cross build --release --target x86_64-apple-darwin
-    ```
 
 ## 📄 License
 
