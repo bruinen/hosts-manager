@@ -30,9 +30,8 @@ The application is built entirely in **Rust** using the **Iced** GUI framework a
 
 * [Rust](https://www.rust-lang.org/tools/install) (latest stable version)
 * [Git](https://git-scm.com/downloads)
-* **For Linux**: A C compiler (like `gcc` or `clang`) and GTK3 development libraries (`libgtk-3-dev`).
-* **For Windows**: The MSVC build tools.
 
+  
 ### Building from Source
 
 1.  Clone the repository:
