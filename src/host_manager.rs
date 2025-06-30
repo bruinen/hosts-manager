@@ -1,5 +1,7 @@
 use std::fs;
 use serde::{Deserialize, Serialize};
+use std::env;
+use std::path::PathBuf; 
 
 #[derive(Debug, Clone, PartialEq, Eq,Serialize, Deserialize)]
 pub struct HostEntry {
@@ -15,12 +17,11 @@ pub enum Line {
     Empty,
 }
 
-pub fn load_hosts_entries(hosts_path: &str) -> Vec<Line> {
-    let contents = fs::read_to_string(hosts_path).unwrap_or_else(|e| {
+pub fn load_hosts_entries() -> Vec<Line> {
+    let contents = fs::read_to_string(get_hosts_file_path()).unwrap_or_else(|e| {
         println!("Errore nella lettura del file hosts: {}", e);
         String::new()
     });
-
     contents.lines()
         .map(|line| {
             let trimmed_line = line.trim();
@@ -77,9 +78,27 @@ pub fn write_hosts_entries_to_file(entries: &[Line]) -> std::io::Result<()> {
             Line::Empty => "\n".to_string(),
         })
         .collect();
-
+    
     // 4. Scrivi il contenuto aggiornato nel file
-    fs::write("/etc/hosts", content.as_bytes())?;
+    fs::write(get_hosts_file_path(), content.as_bytes())?;
 
     Ok(())
+}
+// Ritorna il percorso corretto del file hosts in base al sistema operativo
+fn get_hosts_file_path() -> PathBuf {
+    let os = env::consts::OS;
+
+    match os {
+        "windows" => {
+            // Su Windows, il percorso è C:\Windows\System32\drivers\etc\hosts
+            let mut path = PathBuf::from(env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string()));
+            path.push("System32");
+            path.push("drivers");
+            path.push("etc");
+            path.push("hosts");
+            path
+        },
+        // Linux, macOS e altri sistemi Unix-like usano /etc/hosts
+        _ => PathBuf::from("/etc/hosts"),
+    }
 }

@@ -324,7 +324,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                 // Se non ci sono profili, crea un profilo "Default"
                 state.success_message = Some("Creazione del profilo 'Default'...".to_string());
                 return Task::perform(async {
-                    let hosts = host_manager::load_hosts_entries("/etc/hosts");
+                    let hosts = host_manager::load_hosts_entries();
                     let conn = db_manager::initialize_db()?;
                     db_manager::create_profile(&conn, "Default", &hosts)?;
                     Ok(())
