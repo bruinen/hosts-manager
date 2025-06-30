@@ -9,42 +9,34 @@ use std::path::PathBuf;
 use dirs;
 use rusqlite::ffi::Error;
 
-// Struct per rappresentare un profilo nel database
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
     pub name: String,
     pub hosts: Vec<Line>,
-    pub is_active: bool, // Nuovo campo per i dati degli host
+    pub is_active: bool, 
 }
 
-// Implementazione del trait Display per la struttura Profile
 impl fmt::Display for Profile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name)
     }
 }
 
-// Inizializza il database e crea la tabella 'profiles' con il nuovo schema
 pub fn initialize_db() -> Result<Connection> {
     
-    // 1. Trova la directory dei dati dell'applicazione
     let mut db_path: PathBuf = dirs::data_dir().unwrap_or_else(|| {
-        // Se non riesce a trovare la directory, usa la directory corrente
         eprintln!("Impossibile trovare la directory dei dati dell'applicazione, verrà usato il percorso locale.");
         PathBuf::from(".")
     });
 
-    // 2. Aggiungi il nome della tua applicazione
     db_path.push("hosts_manager");
 
-    // 3. Crea la directory se non esiste
-    std::fs::create_dir_all(&db_path).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    std::fs::create_dir_all(&db_path)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-    // 4. Aggiungi il nome del file del database
     db_path.push("profiles.db");
-
-    // 5. Apri la connessione al database
+    
     let conn = Connection::open(&db_path)?;
    
     conn.execute(
@@ -71,12 +63,11 @@ pub fn create_profile(conn: &Connection, name: &str, hosts: &[Line]) -> Result<(
     Ok(())
 }
 
-// Recupera tutti i profili dal database
 pub fn get_all_profiles(conn: &Connection) -> Result<Vec<Profile>> {
     let mut stmt = conn.prepare("SELECT id, name, hosts_json, is_active FROM profiles")?;
     let profiles_iter = stmt.query_map([], |row| {
         let hosts_json: String = row.get(2)?;
-        let hosts: Vec<Line> = serde_json::from_str(&hosts_json) // E qui deserializzi
+        let hosts: Vec<Line> = serde_json::from_str(&hosts_json) 
             .map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
 
         let is_active_int: i64 = row.get(3)?;
@@ -94,15 +85,11 @@ pub fn get_all_profiles(conn: &Connection) -> Result<Vec<Profile>> {
     profiles
 }
 pub fn set_active_profile(conn: &Connection, profile_id: &str) -> Result<()> {
-    // 1. Disattiva tutti i profili
     conn.execute("UPDATE profiles SET is_active = 0", [])?;
-
-    // 2. Attiva il profilo specificato
     conn.execute("UPDATE profiles SET is_active = 1 WHERE id = ?1", params![profile_id])?;
-
     Ok(())
 }
-// Elimina un profilo dal database in base all'ID
+
 pub fn delete_profile(conn: &Connection, profile_id: &str) -> Result<()> {
     conn.execute("DELETE FROM profiles WHERE id = ?1", params![profile_id])?;
     Ok(())

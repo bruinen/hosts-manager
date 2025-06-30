@@ -5,7 +5,7 @@ use crate::app::{Message, MyApp};
 
 
 pub fn view(state: &MyApp) -> Element<Message> {
-    // Label per mostrare l'errore o il successo
+
     let status_label: Text<'_, Theme, Renderer> = if let Some(msg) = &state.error_message {
         text(msg).size(16).color(Color::from_rgb(0.8, 0.2, 0.2)) // Rosso per gli errori
     } else if let Some(msg) = &state.success_message {
@@ -13,30 +13,25 @@ pub fn view(state: &MyApp) -> Element<Message> {
     } else {
         text("")
     };
-    // Vista per la creazione di un nuovo profilo
     let new_profile_input = row![
-        text_input("Nuovo nome profilo", &state.new_profile_name)
+        text_input("New profile", &state.new_profile_name)
             .on_input(Message::NewProfileNameChanged)
             .width(Length::Fill),
-        button("Crea").on_press(Message::CreateProfileButtonPressed),
+        button("create").on_press(Message::CreateProfileButtonPressed),
     ]
         .spacing(10)
         .align_y(Alignment::Center);
 
-    // Lista dei profili esistenti
     let profiles_list: Vec<Element<Message>> = state.profiles
         .iter()
         .map(|profile| {
             let select_button = if state.selected_profile.as_ref().map(|p| p.id.clone()) == Some(profile.id.clone()) {
-                // Il profilo è già selezionato, mostra un pulsante diverso o un testo
                 button("Attivo")
             } else {
                 button("Seleziona").on_press(Message::ProfileSelected(profile.clone())).into()
             };
 
-            // Aggiungi una condizione per il pulsante "Elimina"
             let delete_button = if profile.name == "Default" {
-                // Non mostrare il pulsante "Elimina" per il profilo "Default"
                 button("Default")
             } else {
                 button("Elimina").on_press(Message::DeleteProfile(profile.id.clone())).into()

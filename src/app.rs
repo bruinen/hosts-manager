@@ -94,7 +94,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             let ip = state.input_ip.clone();
 
             if hostname.is_empty() || ip.is_empty() {
-                state.error_message = Some("IP e Hostname non possono essere vuoti.".to_string());
+                state.error_message = Some("IP e Hostname are required.".to_string());
                 return Task::none();
             }
 
@@ -131,7 +131,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                     }, Message::UpdateDatabaseResult),
                 ]);
             } else {
-                state.error_message = Some("Seleziona un profilo per aggiungere un host.".to_string());
+                state.error_message = Some("No Profile Selected.".to_string());
             }
 
 
@@ -140,10 +140,10 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             let hostname = state.input_text.clone();
             let dns_server = state.input_text_dns.clone();
             if hostname.is_empty() {
-                state.error_message = Some("L'hostname non può essere vuoto per il lookup DNS.".to_string());
+                state.error_message = Some("Hostname is required for DNS lookup.".to_string());
                 return Task::none();
             }
-            state.success_message = Some("Ricerca IP in corso...".to_string());
+            state.success_message = Some("IP searching ...".to_string());
 
             return Task::perform(async move {
                 resolve_hostname_with_specific_dns(&hostname,&dns_server)
@@ -151,7 +151,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             }, Message::DnsLookupResult);
         }
         Message::DnsLookupResult(Ok(ip_address)) => {
-            state.success_message = Some(format!("IP trovato: {}", ip_address));
+            state.success_message = Some(format!("IP found: {}", ip_address));
 
             let new_entry = Line::Entry(Entry {
                 ip: ip_address,
@@ -182,7 +182,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                     }, Message::UpdateDatabaseResult),
                 ]);
             } else {
-                state.error_message = Some("Seleziona un profilo per aggiungere un host.".to_string());
+                state.error_message = Some("Profile is required.".to_string());
             }
             state.input_text.clear();
 
@@ -281,7 +281,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         }
         Message::SaveSuccess => {
             state.error_message = None;
-            state.success_message = Some(String::from("Salvataggio riuscito."));
+            state.success_message = Some(String::from("Saved successfully."));
         }
         Message::SaveError(e) => {
             state.error_message = Some(e);
@@ -301,7 +301,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::LoadProfilesResult(Ok(profiles)) => {
             if profiles.is_empty() {
 
-                state.success_message = Some("Creazione del profilo 'Default'...".to_string());
+                state.success_message = Some("Creating  'Default' profile ...".to_string());
                 return Task::perform(async {
                     let hosts = host_manager::load_hosts_entries();
                     let conn = db_manager::initialize_db()?;
@@ -310,7 +310,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                 }, |result: Result<(), rusqlite::Error>| {
                     match result {
                         Ok(_) => Message::LoadProfiles,
-                        Err(e) => Message::SaveError(format!("Errore nella creazione del profilo di default: {}", e)),
+                        Err(e) => Message::SaveError(format!("Error creating default profile: {}", e)),
                     }
                 });
             } else {
@@ -322,12 +322,12 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                 if let Some(profile) = active_profile {
                     state.selected_profile = Some(profile.clone());
                     state.file_lines = profile.hosts.clone();
-                    state.success_message = Some(format!("Caricato il profilo: {}", profile.name));
+                    state.success_message = Some(format!("Profile loaded: {}", profile.name));
                 } else {
                     state.selected_profile = state.profiles.first().cloned();
                     if let Some(profile) = &state.selected_profile {
                         state.file_lines = profile.hosts.clone();
-                        state.success_message = Some(format!("Caricato il profilo di default: {}", profile.name));
+                        state.success_message = Some(format!("Default profile loaded: {}", profile.name));
                     }
                 }
             }
@@ -438,7 +438,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::UpdateDatabaseResult(Ok(_)) => {
         }
         Message::UpdateDatabaseResult(Err(e)) => {
-            state.error_message = Some(format!("Errore nell'aggiornamento del database: {}", e));
+            state.error_message = Some(format!("Database update error: {}", e));
         }
 
         Message::ExportProfilesButtonPressed => {
@@ -539,7 +539,7 @@ fn main_view(state: &MyApp) -> Element<Message> {
     let selected_profile_name = state.selected_profile
         .as_ref()
         .map(|p| p.name.clone())
-        .unwrap_or_else(|| "Nessun profilo selezionato".to_string());
+        .unwrap_or_else(|| "No Profile Selected".to_string());
 
     let profile_info_row = row![
         text(format!("Profilo attuale: {}", selected_profile_name))
@@ -632,9 +632,7 @@ fn main_view(state: &MyApp) -> Element<Message> {
                             delete_button= button("Elimina");
                             modify_button= button("Modifica");
                         }
-
-
-
+                        
                         row![
                             text(format!("{:<15} {}", entry.ip, entry.hostname))
                                 .width(Length::Fill),

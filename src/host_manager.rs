@@ -29,7 +29,7 @@ pub enum Line {
 
 pub fn load_hosts_entries() -> Vec<Line> {
     let contents = fs::read_to_string(get_hosts_file_path()).unwrap_or_else(|e| {
-        println!("Errore nella lettura del file hosts: {}", e);
+        println!("Error reading host file: {}", e);
         String::new()
     });
     contents.lines()
