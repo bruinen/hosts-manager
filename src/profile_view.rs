@@ -51,19 +51,26 @@ pub fn view(state: &MyApp) -> Element<'_, Message> {
         .spacing(10)
         .align_y(Alignment::Center);
 
+    let ok_color = Color::from_rgb(0.2, 0.7, 0.2);
+    let warning_color = Color::from_rgb(0.9, 0.6, 0.2);
     let (permission_text, permission_color) = match state.hosts_permission {
-        Some(HostsPermission::Writable) => ("Il file hosts è scrivibile direttamente.".to_string(), Color::from_rgb(0.2, 0.7, 0.2)),
-        Some(HostsPermission::Sudo) => (format!("Scrittura tramite sudo attiva ({}).", SUDOERS_FILE), Color::from_rgb(0.2, 0.7, 0.2)),
-        Some(HostsPermission::Missing) => ("Permessi non configurati: il file hosts non può essere modificato.".to_string(), Color::from_rgb(0.9, 0.6, 0.2)),
+        Some(status) if !status.data_dir_writable => ("La cartella dei profili appartiene a root: configura i permessi per salvare le modifiche.".to_string(), warning_color),
+        Some(status) => match status.hosts {
+            HostsPermission::Writable => ("Il file hosts è scrivibile direttamente.".to_string(), ok_color),
+            HostsPermission::Sudo => (format!("Scrittura tramite sudo attiva ({}).", SUDOERS_FILE), ok_color),
+            HostsPermission::Missing => ("Permessi non configurati: il file hosts non può essere modificato.".to_string(), warning_color),
+        },
         None => ("Verifica dei permessi in corso...".to_string(), Color::from_rgb(0.5, 0.5, 0.5)),
     };
+    let needs_setup = state.hosts_permission.is_some_and(|s| s.needs_setup());
+    let has_sudo_rule = state.hosts_permission.is_some_and(|s| s.hosts == HostsPermission::Sudo);
 
     let permission_row = row![
         text(permission_text).color(permission_color).width(Length::Fill),
         button("Configura permessi")
-            .on_press_maybe((state.hosts_permission == Some(HostsPermission::Missing)).then_some(Message::InstallSudoersPressed)),
+            .on_press_maybe(needs_setup.then_some(Message::InstallSudoersPressed)),
         button("Rimuovi permessi")
-            .on_press_maybe((state.hosts_permission == Some(HostsPermission::Sudo)).then_some(Message::RemoveSudoersPressed)),
+            .on_press_maybe(has_sudo_rule.then_some(Message::RemoveSudoersPressed)),
     ]
         .spacing(10)
         .align_y(Alignment::Center);

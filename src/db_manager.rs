@@ -47,6 +47,11 @@ fn db_path() -> &'static PathBuf {
     })
 }
 
+// Cartella che contiene il database dei profili
+pub fn data_dir() -> &'static std::path::Path {
+    db_path().parent().unwrap_or(std::path::Path::new("."))
+}
+
 // Apre la connessione al database; cartella e tabella vengono create solo al primo utilizzo
 pub fn initialize_db() -> Result<Connection> {
     let path = db_path();

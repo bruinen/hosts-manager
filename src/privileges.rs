@@ -4,6 +4,9 @@
 // il contenuto viene passato a `sudo -n /usr/bin/tee /etc/hosts`. Per evitare la richiesta
 // della password, una regola sudoers (installata una volta sola con i privilegi di
 // amministratore) consente all'utente corrente di eseguire esattamente quel comando.
+//
+// Le versioni precedenti venivano avviate come root e lasciavano la cartella dei dati
+// (database dei profili) di proprietà di root: la stessa procedura la restituisce all'utente.
 
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -25,7 +28,27 @@ pub enum HostsPermission {
     Missing,
 }
 
-pub fn check_hosts_permission() -> HostsPermission {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionStatus {
+    pub hosts: HostsPermission,
+    // false se la cartella dei dati (o il database) non è scrivibile dall'utente
+    pub data_dir_writable: bool,
+}
+
+impl PermissionStatus {
+    pub fn needs_setup(&self) -> bool {
+        self.hosts == HostsPermission::Missing || !self.data_dir_writable
+    }
+}
+
+pub fn check_permissions(data_dir: &Path) -> PermissionStatus {
+    PermissionStatus {
+        hosts: check_hosts_permission(),
+        data_dir_writable: is_data_dir_writable(data_dir),
+    }
+}
+
+fn check_hosts_permission() -> HostsPermission {
     if OpenOptions::new().write(true).open(HOSTS_PATH).is_ok() {
         HostsPermission::Writable
     } else if sudo_rule_active() {
@@ -35,10 +58,11 @@ pub fn check_hosts_permission() -> HostsPermission {
     }
 }
 
-// `sudo -n -k -l <comando>` termina con successo solo se il comando è consentito senza password
-// (-k ignora le credenziali in cache, che darebbero un falso positivo per qualche minuto)
+// La regola è attiva se il file sudoers esiste e sudo consente il comando.
+// `sudo -l` da solo non basta: non chiede la password anche per comandi che la richiederebbero.
 fn sudo_rule_active() -> bool {
     cfg!(unix)
+        && Path::new(SUDOERS_FILE).exists()
         && Command::new(SUDO)
             .args(["-n", "-k", "-l", TEE, HOSTS_PATH])
             .stdin(Stdio::null())
@@ -47,6 +71,24 @@ fn sudo_rule_active() -> bool {
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
+}
+
+// La cartella deve permettere di creare file (SQLite crea il journal accanto al database)
+// e i file già presenti devono essere scrivibili. Una cartella non ancora creata va bene.
+fn is_data_dir_writable(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return !dir.exists();
+    };
+
+    let probe = dir.join(format!(".write-test-{}", std::process::id()));
+    let dir_writable = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+
+    dir_writable
+        && entries
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .all(|e| OpenOptions::new().append(true).open(e.path()).is_ok())
 }
 
 // Scrive il contenuto nel file hosts tramite `sudo -n tee` (non chiede mai la password)
@@ -125,15 +167,41 @@ fn install_script(user: &str) -> String {
     )
 }
 
-// Installa la regola sudoers chiedendo la password di amministratore (finestra di sistema macOS)
-pub fn install_sudoers_rule() -> Result<(), String> {
-    let user = current_user().map_err(|e| e.to_string())?;
-    run_as_admin(&install_script(&user))?;
+// Restituisce all'utente la cartella dei dati creata da una versione avviata come root
+fn chown_script(user: &str, data_dir: &Path) -> io::Result<String> {
+    let dir = data_dir.to_str().filter(|d| !d.contains('\'')).ok_or_else(|| {
+        io::Error::other(format!("Percorso dei dati non supportato: {}", data_dir.display()))
+    })?;
+    Ok(format!("/usr/sbin/chown -R {user} '{dir}'"))
+}
 
-    if sudo_rule_active() {
-        Ok(())
-    } else {
+// Configura i permessi mancanti chiedendo una sola volta la password di amministratore
+// (finestra di sistema macOS): regola sudoers per il file hosts e proprietà della cartella dei dati
+pub fn setup_permissions(data_dir: &Path) -> Result<(), String> {
+    let status = check_permissions(data_dir);
+    let user = current_user().map_err(|e| e.to_string())?;
+
+    let mut steps = Vec::new();
+    if status.hosts == HostsPermission::Missing {
+        steps.push(install_script(&user));
+    }
+    if !status.data_dir_writable {
+        steps.push(chown_script(&user, data_dir).map_err(|e| e.to_string())?);
+    }
+    if steps.is_empty() {
+        return Ok(());
+    }
+
+    let script = steps.iter().map(|s| format!("( {} )", s)).collect::<Vec<_>>().join(" && ");
+    run_as_admin(&script)?;
+
+    let status = check_permissions(data_dir);
+    if status.hosts == HostsPermission::Missing {
         Err("Regola installata ma non attiva: verifica che /etc/sudoers includa /etc/sudoers.d.".to_string())
+    } else if !status.data_dir_writable {
+        Err(format!("La cartella {} non è ancora scrivibile.", data_dir.display()))
+    } else {
+        Ok(())
     }
 }
 
@@ -204,6 +272,23 @@ mod tests {
         if let Ok(output) = status {
             assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         }
+    }
+
+    #[test]
+    fn chown_script_quotes_path() {
+        let script = chown_script("romeo", Path::new("/Users/romeo/Library/Application Support/hosts_manager")).unwrap();
+        assert_eq!(script, "/usr/sbin/chown -R romeo '/Users/romeo/Library/Application Support/hosts_manager'");
+        assert!(chown_script("romeo", Path::new("/tmp/it's")).is_err());
+    }
+
+    #[test]
+    fn data_dir_writable_checks() {
+        let dir = std::env::temp_dir().join(format!("hosts-manager-data-{}", std::process::id()));
+        assert!(is_data_dir_writable(&dir)); // non ancora creata
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("profiles.db"), b"").unwrap();
+        assert!(is_data_dir_writable(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

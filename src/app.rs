@@ -4,7 +4,7 @@ use crate::host_manager::{Line, write_hosts_entries_to_file, Entry, hostname_mat
 use crate::{host_manager, profile_view, db_manager};
 use crate::db_manager::{update_profile, Profile};
 use crate::dns_lookup::resolve_hostname_with_specific_dns;
-use crate::privileges::{self, HostsPermission};
+use crate::privileges::{self, PermissionStatus};
 
 // Server DNS proposto all'avvio, sovrascrivibile con la variabile d'ambiente HOSTS_MANAGER_DNS
 const DEFAULT_DNS_SERVER: &str = "10.10.10.10";
@@ -57,7 +57,7 @@ pub enum Message {
     ClearSearch,
 
     CheckHostsPermission,
-    HostsPermissionChecked(HostsPermission),
+    HostsPermissionChecked(PermissionStatus),
     InstallSudoersPressed,
     RemoveSudoersPressed,
     SudoersResult(Result<String, String>),
@@ -99,7 +99,7 @@ pub struct MyApp {
     pub new_profile_name: String,
     pub view: View,
     pub search_query: String,
-    pub hosts_permission: Option<HostsPermission>,
+    pub hosts_permission: Option<PermissionStatus>,
 }
 
 impl MyApp {
@@ -488,7 +488,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         }
 
         Message::CheckHostsPermission => {
-            return blocking_task(privileges::check_hosts_permission, Message::HostsPermissionChecked);
+            return blocking_task(|| privileges::check_permissions(db_manager::data_dir()), Message::HostsPermissionChecked);
         }
         Message::HostsPermissionChecked(permission) => {
             state.hosts_permission = Some(permission);
@@ -496,7 +496,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::InstallSudoersPressed => {
             state.set_success("Inserisci la password di amministratore nella finestra di sistema...");
             return blocking_task(
-                || privileges::install_sudoers_rule().map(|_| "Permessi configurati: l'app può modificare il file hosts.".to_string()),
+                || privileges::setup_permissions(db_manager::data_dir()).map(|_| "Permessi configurati.".to_string()),
                 Message::SudoersResult,
             );
         }
@@ -713,12 +713,18 @@ fn main_view(state: &MyApp) -> Element<'_, Message> {
 
 // Avviso mostrato nella vista principale quando l'app non può scrivere il file hosts
 fn permission_warning(state: &MyApp) -> Element<'_, Message> {
-    if state.hosts_permission != Some(HostsPermission::Missing) {
+    let Some(status) = state.hosts_permission.filter(PermissionStatus::needs_setup) else {
         return Space::with_height(0).into();
-    }
+    };
+
+    let warning = if status.data_dir_writable {
+        format!("Permessi mancanti: le modifiche non verranno scritte in {}.", privileges::HOSTS_PATH)
+    } else {
+        "Permessi mancanti: la cartella dei profili appartiene a root, le modifiche non verranno salvate.".to_string()
+    };
 
     row![
-        text(format!("Permessi mancanti: le modifiche non verranno scritte in {}.", privileges::HOSTS_PATH))
+        text(warning)
             .color(Color::from_rgb(0.9, 0.6, 0.2))
             .width(Length::Fill),
         button("Configura permessi").on_press(Message::InstallSudoersPressed),
