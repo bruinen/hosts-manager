@@ -1,6 +1,6 @@
 use iced::{window, Size, Task, Theme, Settings};
 use crate::host_manager::{Line, write_hosts_entries_to_file, Entry};
-use crate::{host_manager, db_manager, style, view};
+use crate::{host_manager, db_manager, dns_cache, style, view};
 use crate::db_manager::{update_profile, Profile};
 use crate::dns_lookup::resolve_hostname_with_specific_dns;
 use crate::privileges::{self, PermissionStatus};
@@ -33,7 +33,7 @@ pub enum Message {
     EditHostnameChanged(String),
     SaveEditedEntry,
     CancelEdit,
-    SaveSuccess,
+    SaveSuccess { dns_flushed: bool },
     SaveError(String),
     ProfileSelected(String),
     NewProfileNameChanged(String),
@@ -57,6 +57,9 @@ pub enum Message {
     SearchQueryChanged(String),
     ClearSearch,
 
+    FlushDnsPressed,
+    DnsFlushed(Result<(), String>),
+
     CheckHostsPermission,
     HostsPermissionChecked(PermissionStatus),
     InstallSudoersPressed,
@@ -69,7 +72,8 @@ impl Message {
     fn is_async_result(&self) -> bool {
         matches!(self,
             Message::DnsLookupResult(_)
-            | Message::SaveSuccess
+            | Message::SaveSuccess { .. }
+            | Message::DnsFlushed(_)
             | Message::SaveError(_)
             | Message::ProfileCreated(_)
             | Message::LoadProfiles
@@ -136,13 +140,14 @@ impl MyApp {
 
 
 // Scrive le righe nel file hosts e notifica l'esito
+// Scrive le righe nel file hosts e svuota la cache DNS, così le modifiche hanno effetto subito
 fn write_hosts_task(entries: Vec<Line>) -> Task<Message> {
-    Task::perform(async move {
-        write_hosts_entries_to_file(&entries)
-            .map_err(|e| e.to_string())
-    }, |result| {
+    blocking_task(move || {
+        write_hosts_entries_to_file(&entries).map_err(|e| e.to_string())?;
+        Ok(dns_cache::flush_dns_cache().is_ok())
+    }, |result: Result<bool, String>| {
         match result {
-            Ok(_) => Message::SaveSuccess,
+            Ok(dns_flushed) => Message::SaveSuccess { dns_flushed },
             Err(e) => Message::SaveError(e),
         }
     })
@@ -299,10 +304,14 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::CancelEdit => {
             state.cancel_edit();
         }
-        Message::SaveSuccess => {
+        Message::SaveSuccess { dns_flushed } => {
             // Non sovrascrivere un messaggio più specifico (es: IP trovato, profilo attivato)
             if state.error_message.is_none() && state.success_message.is_none() {
-                state.set_success("Changes saved.");
+                state.set_success(if dns_flushed {
+                    "Changes saved."
+                } else {
+                    "Changes saved, but the DNS cache could not be flushed."
+                });
             }
         }
         Message::SaveError(e) => {
@@ -496,6 +505,16 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         }
         Message::ClearSearch => {
             state.search_query.clear();
+        }
+
+        Message::FlushDnsPressed => {
+            return blocking_task(dns_cache::flush_dns_cache, Message::DnsFlushed);
+        }
+        Message::DnsFlushed(Ok(())) => {
+            state.set_success("DNS cache flushed.");
+        }
+        Message::DnsFlushed(Err(e)) => {
+            state.set_error(e);
         }
 
         Message::CheckHostsPermission => {

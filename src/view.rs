@@ -48,6 +48,7 @@ fn sidebar(state: &MyApp) -> Element<'_, Message> {
     let actions = column![
         sidebar_action("Import profile…", Message::ImportProfilesButtonPressed),
         sidebar_action("Export active profile…", Message::ExportProfilesButtonPressed),
+        sidebar_action("Flush DNS cache", Message::FlushDnsPressed),
     ]
         .spacing(2);
 
@@ -146,10 +147,12 @@ fn permissions_panel(state: &MyApp) -> Element<'_, Message> {
     };
 
     if status.needs_setup() {
-        let description = if status.data_dir_writable {
-            "A sudoers rule is needed to write the hosts file without running the app as administrator."
-        } else {
+        let description = if !status.data_dir_writable {
             "The profiles folder is owned by root: changes cannot be saved."
+        } else if status.rule_outdated {
+            "The sudoers rule needs an update to flush the DNS cache after each change."
+        } else {
+            "A sudoers rule is needed to write the hosts file without running the app as administrator."
         };
         return container(
             column![

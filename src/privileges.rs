@@ -5,6 +5,9 @@
 // della password, una regola sudoers (installata una volta sola con i privilegi di
 // amministratore) consente all'utente corrente di eseguire esattamente quel comando.
 //
+// La stessa regola consente anche il comando che svuota la cache DNS di sistema
+// (su macOS `killall -HUP mDNSResponder` richiede root).
+//
 // Le versioni precedenti venivano avviate come root e lasciavano la cartella dei dati
 // (database dei profili) di proprietà di root: la stessa procedura la restituisce all'utente.
 
@@ -17,6 +20,12 @@ const SUDO: &str = "/usr/bin/sudo";
 const TEE: &str = "/usr/bin/tee";
 pub const HOSTS_PATH: &str = "/etc/hosts";
 pub const SUDOERS_FILE: &str = "/etc/sudoers.d/hosts-manager";
+
+// Comando (con argomenti esatti) per svuotare la cache DNS, consentito dalla regola sudoers
+#[cfg(target_os = "macos")]
+pub const FLUSH_DNS_COMMAND: &[&str] = &["/usr/bin/killall", "-HUP", "mDNSResponder"];
+#[cfg(not(target_os = "macos"))]
+pub const FLUSH_DNS_COMMAND: &[&str] = &["/usr/bin/resolvectl", "flush-caches"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostsPermission {
@@ -33,19 +42,43 @@ pub struct PermissionStatus {
     pub hosts: HostsPermission,
     // false se la cartella dei dati (o il database) non è scrivibile dall'utente
     pub data_dir_writable: bool,
+    // true se la regola sudoers installata non consente ancora di svuotare la cache DNS
+    pub rule_outdated: bool,
 }
 
 impl PermissionStatus {
     pub fn needs_setup(&self) -> bool {
-        self.hosts == HostsPermission::Missing || !self.data_dir_writable
+        self.hosts == HostsPermission::Missing || !self.data_dir_writable || self.rule_outdated
     }
 }
 
 pub fn check_permissions(data_dir: &Path) -> PermissionStatus {
+    let hosts = check_hosts_permission();
     PermissionStatus {
-        hosts: check_hosts_permission(),
+        hosts,
         data_dir_writable: is_data_dir_writable(data_dir),
+        // Solo su macOS la regola viene installata dall'app. Il controllo esegue davvero
+        // il comando (svuotare la cache è innocuo): `sudo -l` non distingue NOPASSWD.
+        rule_outdated: cfg!(target_os = "macos")
+            && hosts == HostsPermission::Sudo
+            && !run_with_sudo(FLUSH_DNS_COMMAND, true),
     }
+}
+
+// Esegue un comando consentito dalla regola sudoers senza mai chiedere la password.
+// Con `ignore_cache` le credenziali sudo in cache vengono ignorate (-k).
+pub fn run_with_sudo(command: &[&str], ignore_cache: bool) -> bool {
+    let flags: &[&str] = if ignore_cache { &["-n", "-k"] } else { &["-n"] };
+    cfg!(unix)
+        && Command::new(SUDO)
+            .args(flags)
+            .args(command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
 }
 
 fn check_hosts_permission() -> HostsPermission {
@@ -143,9 +176,10 @@ fn current_user() -> io::Result<String> {
 }
 
 pub fn sudoers_rule(user: &str) -> String {
+    let flush = FLUSH_DNS_COMMAND.join(" ");
     format!(
-        "# Created by Hosts Manager: allows {user} to rewrite {HOSTS_PATH} without a password\n\
-         {user} ALL=(root) NOPASSWD: {TEE} {HOSTS_PATH}\n"
+        "# Created by Hosts Manager: allows {user} to rewrite {HOSTS_PATH} and flush the DNS cache without a password\n\
+         {user} ALL=(root) NOPASSWD: {TEE} {HOSTS_PATH}, {flush}\n"
     )
 }
 
@@ -182,7 +216,7 @@ pub fn setup_permissions(data_dir: &Path) -> Result<(), String> {
     let user = current_user().map_err(|e| e.to_string())?;
 
     let mut steps = Vec::new();
-    if status.hosts == HostsPermission::Missing {
+    if status.hosts == HostsPermission::Missing || status.rule_outdated {
         steps.push(install_script(&user));
     }
     if !status.data_dir_writable {
@@ -196,7 +230,7 @@ pub fn setup_permissions(data_dir: &Path) -> Result<(), String> {
     run_as_admin(&script)?;
 
     let status = check_permissions(data_dir);
-    if status.hosts == HostsPermission::Missing {
+    if status.hosts == HostsPermission::Missing || status.rule_outdated {
         Err("Rule installed but not active: check that /etc/sudoers includes /etc/sudoers.d.".to_string())
     } else if !status.data_dir_writable {
         Err(format!("The folder {} is still not writable.", data_dir.display()))
@@ -246,10 +280,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rule_allows_only_tee_on_hosts() {
+    #[cfg(target_os = "macos")]
+    fn rule_allows_only_tee_on_hosts_and_dns_flush() {
         assert_eq!(
             sudoers_rule("romeo").lines().last().unwrap(),
-            "romeo ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts"
+            "romeo ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts, /usr/bin/killall -HUP mDNSResponder"
         );
     }
 
@@ -259,7 +294,7 @@ mod tests {
         let visudo = script.find("visudo -cf").unwrap();
         let mv = script.find("/bin/mv").unwrap();
         assert!(visudo < mv);
-        assert!(script.contains("'romeo ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts'"));
+        assert!(script.contains("'romeo ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts, "));
     }
 
     #[test]

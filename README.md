@@ -24,6 +24,7 @@ The application is built entirely in **Rust** using the **Iced** GUI framework a
 * **Cross-Platform Compatibility**: The application is designed to work on **Windows**, **macOS**, and **Linux**. It correctly identifies the OS to manage the `hosts` file and application data paths.
 * **System Permissions Handling**: On macOS the app installs a minimal sudoers rule so it can update the `hosts` file without running as root.
 * **Search**: Filter host entries by hostname or alias.
+* **DNS Cache Flush**: The system DNS cache is flushed after every change (`mDNSResponder` on macOS, `ipconfig /flushdns` on Windows, `resolvectl` on Linux), and on demand from the sidebar.
 
 
 ## 🚀 Getting Started
@@ -67,8 +68,10 @@ The application runs as a normal user (do **not** start it with `sudo`).
 * **macOS**: if `/etc/hosts` is not writable, click **Set up permissions** at the bottom of the sidebar. After you enter the administrator password once, the app installs `/etc/sudoers.d/hosts-manager`, which lets **only your user** run **only** this command without a password:
 
   ```
-  <user> ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts
+  <user> ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts, /usr/bin/killall -HUP mDNSResponder
   ```
+
+  The second command flushes the DNS cache after every change. If you installed the rule with an older version, the app asks you to update it.
 
   The rule is checked with `visudo -c` before it is installed, and you can remove it with **Remove** next to the permission status.
 
