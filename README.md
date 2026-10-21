@@ -22,7 +22,8 @@ The application is built entirely in **Rust** using the **Iced** GUI framework a
 * **Seamless Editing**: Modify existing entries directly within the UI, with changes saved automatically to your profile and the `hosts` file.
 * **Import/Export Profiles**: Share your host configurations by exporting profiles to a `.json` file and importing them on another machine.
 * **Cross-Platform Compatibility**: The application is designed to work on **Windows**, **macOS**, and **Linux**. It correctly identifies the OS to manage the `hosts` file and application data paths.
-* **System Permissions Handling**: The application requires administrative privileges to modify the `hosts` file, and it handles the required permissions gracefully on each platform.
+* **System Permissions Handling**: On macOS the app installs a minimal sudoers rule so it can update the `hosts` file without running as root.
+* **Search**: Filter host entries by hostname or alias.
 
 
 ## 🚀 Getting Started
@@ -50,20 +51,32 @@ The application is built entirely in **Rust** using the **Iced** GUI framework a
 
     The executable will be located in `target/release/`.
 
-### Running the Application
+### Building the macOS DMG
 
-Since the application needs to modify the system `hosts` file, it must be run with administrative privileges.
+```bash
+./scripts/build-dmg.sh
+```
 
-* **Linux/macOS**:
+This builds the `.app` bundle with [cargo-bundle](https://github.com/burtonageo/cargo-bundle) (installed automatically if missing), signs it ad-hoc and creates `target/dmg/HostsManager-<version>.dmg`.
+The app is not notarized: on first launch right-click the app and choose **Open**, or run `xattr -d com.apple.quarantine /Applications/HostsManager.app`.
 
-  ```bash
-  sudo ./target/release/hosts_manager
+### Permissions for the hosts file
+
+The application runs as a normal user (do **not** start it with `sudo`).
+
+* **macOS**: if `/etc/hosts` is not writable, open **Gestisci Profili → Configura permessi**. After you enter the administrator password once, the app installs `/etc/sudoers.d/hosts-manager`, which lets **only your user** run **only** this command without a password:
+
+  ```
+  <user> ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts
   ```
 
-  You will be prompted for your password.
+  The rule is checked with `visudo -c` before it is installed, and you can remove it with **Rimuovi permessi**.
 
-* **Windows**:
-  Navigate to the `target/release/` folder, right-click `hosts_manager.exe`, and select **"Run as administrator"**.
+* **Linux**: add the same rule by hand with `sudo visudo -f /etc/sudoers.d/hosts-manager`.
+
+* **Windows**: right-click `hosts-manager.exe` and select **"Run as administrator"**.
+
+The DNS server suggested for lookups can be set with the `HOSTS_MANAGER_DNS` environment variable. Leave the field empty to use the system DNS.
 
 
 ## 📄 License

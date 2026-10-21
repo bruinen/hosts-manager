@@ -1,48 +1,37 @@
-use trust_dns_resolver::Resolver;
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts, NameServerConfig};
-use std::io;
-use std::net::{IpAddr, SocketAddr};
-use std::str::FromStr; 
+use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+use std::net::IpAddr;
 
-
-pub fn resolve_hostname_with_specific_dns(
+// Risolve l'hostname usando il server DNS indicato (porta 53, UDP con fallback TCP).
+// Se dns_server_ip_str è vuoto usa la configurazione DNS di sistema.
+pub async fn resolve_hostname_with_specific_dns(
     hostname: &str,
     dns_server_ip_str: &str,
-) -> io::Result<String> {
-    let mut resolver = Resolver::new(ResolverConfig::default(), ResolverOpts::default())?;
-    if !dns_server_ip_str.is_empty() {       
-        let dns_ip = IpAddr::from_str(dns_server_ip_str)
-            .map_err(|e| io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Invalid DNS server IP '{}': {}", dns_server_ip_str, e)
-            ))?;
-    
-        // La porta standard per il DNS è la 53 (UDP)
-        let dns_socket_addr = SocketAddr::new(dns_ip, 53);
-    
-        let mut config = ResolverConfig::new();
-        config.add_name_server(NameServerConfig {
-            socket_addr: dns_socket_addr,
-            protocol: trust_dns_resolver::config::Protocol::Udp, // Il protocollo UDP è il più comune per DNS
-            tls_dns_name: None, // Usa None per DNS su UDP/TCP standard
-            trust_negative_responses: false,
-            bind_addr: None,
-        });
-    
-        resolver = Resolver::new(config, ResolverOpts::default())?;
-       
-    }
-    let response = resolver.lookup_ip(hostname)
-        .map_err(|e| io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to resolve hostname '{}': {}", hostname, e)))?;
-    
-    let first_ip = response.iter()
-        .next()
-        .ok_or_else(|| io::Error::new(
-            io::ErrorKind::NotFound,
-            "No IP addresses found for hostname"
-        ))?;
+) -> Result<String, String> {
+    let dns_server_ip_str = dns_server_ip_str.trim();
 
-    Ok(first_ip.to_string())
+    let resolver = if dns_server_ip_str.is_empty() {
+        TokioAsyncResolver::tokio_from_system_conf().unwrap_or_else(|_| {
+            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
+        })
+    } else {
+        let dns_ip: IpAddr = dns_server_ip_str
+            .parse()
+            .map_err(|e| format!("IP del server DNS non valido '{}': {}", dns_server_ip_str, e))?;
+
+        let name_servers = NameServerConfigGroup::from_ips_clear(&[dns_ip], 53, true);
+        let config = ResolverConfig::from_parts(None, vec![], name_servers);
+        TokioAsyncResolver::tokio(config, ResolverOpts::default())
+    };
+
+    let response = resolver
+        .lookup_ip(hostname)
+        .await
+        .map_err(|e| format!("Impossibile risolvere '{}': {}", hostname, e))?;
+
+    response
+        .iter()
+        .next()
+        .map(|ip| ip.to_string())
+        .ok_or_else(|| format!("Nessun indirizzo IP trovato per '{}'", hostname))
 }

@@ -1,9 +1,13 @@
 use iced::{Alignment, Color, Element, Length, Task, Theme,
-           widget::{column, Text,text, button, text_input, row, scrollable, container, Space}, Settings, Renderer};
-use crate::host_manager::{Line, write_hosts_entries_to_file, Entry};
-use crate::{host_manager, profile_view,db_manager};
+           widget::{column, Text, text, button, text_input, row, scrollable, container, Space}, Settings, Renderer};
+use crate::host_manager::{Line, write_hosts_entries_to_file, Entry, hostname_matches};
+use crate::{host_manager, profile_view, db_manager};
 use crate::db_manager::{update_profile, Profile};
 use crate::dns_lookup::resolve_hostname_with_specific_dns;
+use crate::privileges::{self, HostsPermission};
+
+// Server DNS proposto all'avvio, sovrascrivibile con la variabile d'ambiente HOSTS_MANAGER_DNS
+const DEFAULT_DNS_SERVER: &str = "10.10.10.10";
 
 // Enum for the current view
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -21,9 +25,10 @@ pub enum Message {
     InputChanged(String),
     InputDNSChanged(String),
     DnsLookupButtonPressed,
-    DnsLookupResult(Result<String, String>),
+    DnsLookupResult(Result<Entry, String>),
 
     DeleteEntry(usize),
+    ToggleEntry(usize),
     EditEntry(usize),
     EditIpChanged(String),
     EditHostnameChanged(String),
@@ -31,20 +36,51 @@ pub enum Message {
     CancelEdit,
     SaveSuccess,
     SaveError(String),
-    ProfileSelected(Profile),
+    ProfileSelected(String),
     NewProfileNameChanged(String),
     CreateProfileButtonPressed,
+    ProfileCreated(Result<Profile, String>),
     LoadProfiles,
     LoadProfilesResult(Result<Vec<Profile>, String>),
     ShowMainView,
     ShowProfilesView,
     DeleteProfile(String),
+    ProfileDeleted(Result<String, String>),
     UpdateDatabaseResult(Result<(), String>),
 
     ExportProfilesButtonPressed,
     ImportProfilesButtonPressed,
     ExportProfilesResult(Result<(), String>),
-    ImportProfilesResult(Result<(), String>),
+    ImportProfilesResult(Result<Profile, String>),
+
+    SearchQueryChanged(String),
+    ClearSearch,
+
+    CheckHostsPermission,
+    HostsPermissionChecked(HostsPermission),
+    InstallSudoersPressed,
+    RemoveSudoersPressed,
+    SudoersResult(Result<String, String>),
+}
+
+impl Message {
+    // Risultati di operazioni asincrone: non devono cancellare il messaggio di stato corrente
+    fn is_async_result(&self) -> bool {
+        matches!(self,
+            Message::DnsLookupResult(_)
+            | Message::SaveSuccess
+            | Message::SaveError(_)
+            | Message::ProfileCreated(_)
+            | Message::LoadProfiles
+            | Message::LoadProfilesResult(_)
+            | Message::ProfileDeleted(_)
+            | Message::UpdateDatabaseResult(_)
+            | Message::ExportProfilesResult(_)
+            | Message::ImportProfilesResult(_)
+            | Message::CheckHostsPermission
+            | Message::HostsPermissionChecked(_)
+            | Message::SudoersResult(_))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -53,27 +89,104 @@ pub struct MyApp {
     pub input_text_dns: String,
     pub input_ip: String,
     pub input_hostname: String,
-    pub file_lines: Vec<Line>,
     pub editing_index: Option<usize>,
     pub editing_ip: String,
     pub editing_hostname: String,
     pub error_message: Option<String>,
     pub success_message: Option<String>,
     pub profiles: Vec<Profile>,
-    pub selected_profile: Option<Profile>,
+    pub selected_profile_id: Option<String>,
     pub new_profile_name: String,
     pub view: View,
+    pub search_query: String,
+    pub hosts_permission: Option<HostsPermission>,
+}
 
+impl MyApp {
+    pub fn selected_profile(&self) -> Option<&Profile> {
+        let id = self.selected_profile_id.as_ref()?;
+        self.profiles.iter().find(|p| &p.id == id)
+    }
+
+    fn selected_profile_mut(&mut self) -> Option<&mut Profile> {
+        let id = self.selected_profile_id.as_ref()?;
+        self.profiles.iter_mut().find(|p| &p.id == id)
+    }
+
+    fn set_success(&mut self, msg: impl Into<String>) {
+        self.error_message = None;
+        self.success_message = Some(msg.into());
+    }
+
+    fn set_error(&mut self, msg: impl Into<String>) {
+        self.success_message = None;
+        self.error_message = Some(msg.into());
+    }
+
+    fn cancel_edit(&mut self) {
+        self.editing_index = None;
+        self.editing_ip.clear();
+        self.editing_hostname.clear();
+    }
 }
 
 
+// Scrive le righe nel file hosts e notifica l'esito
+fn write_hosts_task(entries: Vec<Line>) -> Task<Message> {
+    Task::perform(async move {
+        write_hosts_entries_to_file(&entries)
+            .map_err(|e| e.to_string())
+    }, |result| {
+        match result {
+            Ok(_) => Message::SaveSuccess,
+            Err(e) => Message::SaveError(e),
+        }
+    })
+}
+
+// Esegue un'operazione sul database in background, riportando l'errore come stringa
+fn db_task<T: Send + 'static>(
+    operation: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static,
+    on_result: impl Fn(Result<T, String>) -> Message + Send + 'static,
+) -> Task<Message> {
+    Task::perform(async move {
+        let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
+        operation(&conn).map_err(|e| e.to_string())
+    }, on_result)
+}
+
+// Esegue un'operazione bloccante (processi esterni, dialoghi di sistema) fuori dai thread async
+fn blocking_task<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+    on_result: impl Fn(T) -> Message + Send + 'static,
+) -> Task<Message> {
+    Task::perform(async move {
+        tokio::task::spawn_blocking(operation).await.expect("task bloccante interrotto")
+    }, on_result)
+}
+
+// Applica una modifica ai record del profilo selezionato e la salva su file hosts e database
+fn update_entries(state: &mut MyApp, change: impl FnOnce(&mut Vec<Line>)) -> Task<Message> {
+    let Some(profile) = state.selected_profile_mut() else {
+        state.set_error("Nessun profilo selezionato.");
+        return Task::none();
+    };
+
+    change(&mut profile.hosts);
+    let profile_to_update = profile.clone();
+
+    Task::batch([
+        write_hosts_task(profile_to_update.hosts.clone()),
+        db_task(move |conn| update_profile(conn, &profile_to_update), Message::UpdateDatabaseResult),
+    ])
+}
+
 
 fn update(state: &mut MyApp, message: Message) -> Task<Message> {
-    if !matches!(message, Message::SaveSuccess | Message::SaveError(_)) {
+    if !message.is_async_result() {
         state.error_message = None;
         state.success_message = None;
     }
-
 
     match message {
 
@@ -90,143 +203,68 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             state.input_hostname = value;
         }
         Message::ManualAddButtonPressed => {
-            let hostname = state.input_hostname.clone();
-            let ip = state.input_ip.clone();
-
-            if hostname.is_empty() || ip.is_empty() {
-                state.error_message = Some("IP e Hostname are required.".to_string());
-                return Task::none();
+            match Entry::new(&state.input_ip, &state.input_hostname) {
+                Ok(entry) => {
+                    state.input_ip.clear();
+                    state.input_hostname.clear();
+                    return update_entries(state, |hosts| hosts.push(Line::Entry(entry)));
+                }
+                Err(e) => state.set_error(e),
             }
-
-            state.input_ip.clear();
-            state.input_hostname.clear();
-
-            let new_entry = Line::Entry(Entry {
-                ip,
-                hostname,
-                enabled:true,
-                comment: None,
-            });
-            state.file_lines.push(new_entry);
-
-            if let Some(profile) = &mut state.selected_profile {
-                profile.hosts = state.file_lines.clone();
-                let entries_to_save = state.file_lines.clone();
-                let profile_to_update = profile.clone();
-
-                return Task::batch(vec![
-                    Task::perform(async move {
-                        write_hosts_entries_to_file(&entries_to_save)
-                            .map_err(|e| e.to_string())
-                    }, |result| {
-                        match result {
-                            Ok(_) => Message::SaveSuccess,
-                            Err(e) => Message::SaveError(e),
-                        }
-                    }),
-                    Task::perform(async move {
-                        let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
-                        update_profile(&conn, &profile_to_update)
-                            .map_err(|e| e.to_string())
-                    }, Message::UpdateDatabaseResult),
-                ]);
-            } else {
-                state.error_message = Some("No Profile Selected.".to_string());
-            }
-
-
         }
         Message::DnsLookupButtonPressed => {
-            let hostname = state.input_text.clone();
+            let hostname = state.input_text.trim().to_string();
             let dns_server = state.input_text_dns.clone();
             if hostname.is_empty() {
-                state.error_message = Some("Hostname is required for DNS lookup.".to_string());
+                state.set_error("L'hostname è obbligatorio per il DNS lookup.");
                 return Task::none();
             }
-            state.success_message = Some("IP searching ...".to_string());
+            state.set_success("Ricerca IP in corso...");
 
             return Task::perform(async move {
-                resolve_hostname_with_specific_dns(&hostname,&dns_server)
-                    .map_err(|e| e.to_string())
+                let ip = resolve_hostname_with_specific_dns(&hostname, &dns_server).await?;
+                Entry::new(&ip, &hostname)
             }, Message::DnsLookupResult);
         }
-        Message::DnsLookupResult(Ok(ip_address)) => {
-            state.success_message = Some(format!("IP found: {}", ip_address));
-
-            let new_entry = Line::Entry(Entry {
-                ip: ip_address,
-                hostname: state.input_text.clone(),
-                enabled: true,
-                comment: None,
-            });
-            state.file_lines.push(new_entry);
-            if let Some(profile) = &mut state.selected_profile {
-                profile.hosts = state.file_lines.clone();
-                let entries_to_save = state.file_lines.clone();
-                let profile_to_update = profile.clone();
-
-                return Task::batch(vec![
-                    Task::perform(async move {
-                        write_hosts_entries_to_file(&entries_to_save)
-                            .map_err(|e| e.to_string())
-                    }, |result| {
-                        match result {
-                            Ok(_) => Message::SaveSuccess,
-                            Err(e) => Message::SaveError(e),
-                        }
-                    }),
-                    Task::perform(async move {
-                        let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
-                        update_profile(&conn, &profile_to_update)
-                            .map_err(|e| e.to_string())
-                    }, Message::UpdateDatabaseResult),
-                ]);
-            } else {
-                state.error_message = Some("Profile is required.".to_string());
+        Message::DnsLookupResult(Ok(entry)) => {
+            state.set_success(format!("IP trovato: {} → {}", entry.hostname, entry.ip));
+            if state.input_text.trim() == entry.hostname {
+                state.input_text.clear();
             }
-            state.input_text.clear();
-
+            return update_entries(state, |hosts| hosts.push(Line::Entry(entry)));
         }
-
         Message::DnsLookupResult(Err(e)) => {
-            state.error_message = Some(e);
+            state.set_error(e);
         }
 
         Message::DeleteEntry(index) => {
-            if index < state.file_lines.len() {
-                state.file_lines.remove(index);
-                if let Some(profile) = &mut state.selected_profile {
-                    profile.hosts = state.file_lines.clone();
-
-                    let entries_to_save = state.file_lines.clone();
-                    let profile_to_update = profile.clone();
-
-                    return Task::batch(vec![
-                        Task::perform(async move {
-                            write_hosts_entries_to_file(&entries_to_save)
-                                .map_err(|e| e.to_string())
-                        }, |result| {
-                            match result {
-                                Ok(_) => Message::SaveSuccess,
-                                Err(e) => Message::SaveError(e),
-                            }
-                        }),
-                        Task::perform(async move {
-                            let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
-                            update_profile(&conn, &profile_to_update)
-                                .map_err(|e| e.to_string())
-                        }, Message::UpdateDatabaseResult),
-                    ]);
+            // Mantieni coerente l'indice del record in modifica
+            state.editing_index = match state.editing_index {
+                Some(i) if i == index => None,
+                Some(i) if i > index => Some(i - 1),
+                other => other,
+            };
+            return update_entries(state, |hosts| {
+                if index < hosts.len() {
+                    hosts.remove(index);
                 }
-            }
+            });
+        }
+        Message::ToggleEntry(index) => {
+            return update_entries(state, |hosts| {
+                if let Some(Line::Entry(entry)) = hosts.get_mut(index) {
+                    entry.enabled = !entry.enabled;
+                }
+            });
         }
         Message::EditEntry(index) => {
-            if let Some(Line::Entry(entry)) = state.file_lines.get(index) {
-                state.editing_index = Some(index);
-                state.editing_ip = entry.ip.clone();
-                state.editing_hostname = entry.hostname.clone();
-                println!("Modalità di modifica attivata per il record: {} {}", entry.ip, entry.hostname);
-            }
+            let entry = match state.selected_profile().and_then(|p| p.hosts.get(index)) {
+                Some(Line::Entry(entry)) => entry.clone(),
+                _ => return Task::none(),
+            };
+            state.editing_index = Some(index);
+            state.editing_hostname = entry.names();
+            state.editing_ip = entry.ip;
         }
         Message::EditIpChanged(new_ip) => {
             state.editing_ip = new_ip;
@@ -235,171 +273,113 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             state.editing_hostname = new_hostname;
         }
         Message::SaveEditedEntry => {
-            if let Some(index) = state.editing_index {
-                if let Some(Line::Entry(entry)) = state.file_lines.get_mut(index) {
-                    entry.ip = state.editing_ip.clone();
-                    entry.hostname = state.editing_hostname.clone();
-
-                    state.editing_index = None;
-                    state.editing_ip.clear();
-                    state.editing_hostname.clear();
-
-                    if let Some(profile) = &mut state.selected_profile {
-                        profile.hosts = state.file_lines.clone();
-
-                        let entries_to_save = state.file_lines.clone();
-                        let profile_to_update = profile.clone();
-
-                        return Task::batch(vec![
-                            Task::perform(async move {
-                                write_hosts_entries_to_file(&entries_to_save)
-                                    .map_err(|e| e.to_string())
-                            }, |result| {
-                                match result {
-                                    Ok(_) => Message::SaveSuccess,
-                                    Err(e) => Message::SaveError(e),
-                                }
-                            }),
-                            Task::perform(async move {
-                                let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
-                                update_profile(&conn, &profile_to_update)
-                                    .map_err(|e| e.to_string())
-                            }, Message::UpdateDatabaseResult),
-                        ]);
-                    } else {
-                        state.error_message = Some("Select a profile to save changes.".to_string());
-                    }
+            let Some(index) = state.editing_index else {
+                return Task::none();
+            };
+            match Entry::new(&state.editing_ip, &state.editing_hostname) {
+                Ok(edited) => {
+                    state.cancel_edit();
+                    return update_entries(state, |hosts| {
+                        // Mantiene stato (attivo/disattivo) e commento del record originale
+                        if let Some(Line::Entry(entry)) = hosts.get_mut(index) {
+                            entry.ip = edited.ip;
+                            entry.hostname = edited.hostname;
+                            entry.aliases = edited.aliases;
+                        }
+                    });
                 }
+                Err(e) => state.set_error(e),
             }
         }
 
         Message::CancelEdit => {
-            state.editing_index = None;
-            state.editing_ip = String::new();
-            state.editing_hostname = String::new();
-            println!("Modifica annullata.");
+            state.cancel_edit();
         }
         Message::SaveSuccess => {
-            state.error_message = None;
-            state.success_message = Some(String::from("Saved successfully."));
+            // Non sovrascrivere un messaggio più specifico (es: IP trovato, profilo attivato)
+            if state.error_message.is_none() && state.success_message.is_none() {
+                state.set_success("Modifiche salvate.");
+            }
         }
         Message::SaveError(e) => {
-            state.error_message = Some(e);
+            state.set_error(e);
         }
         Message::LoadProfiles => {
-            return Task::perform(async {
-                let conn = match db_manager::initialize_db() {
-                    Ok(c) => c,
-                    Err(e) => return Err(format!("Errore nell'inizializzazione del database: {}", e)),
-                };
-                let profiles = db_manager::get_all_profiles(&conn)
-                    .map_err(|e| format!("Errore nel caricamento dei profili: {}", e))?;
-
-                Ok(profiles)
-            }, Message::LoadProfilesResult);
+            return db_task(db_manager::get_all_profiles, |result| {
+                Message::LoadProfilesResult(result.map_err(|e| format!("Errore nel caricamento dei profili: {}", e)))
+            });
         }
         Message::LoadProfilesResult(Ok(profiles)) => {
             if profiles.is_empty() {
-
-                state.success_message = Some("Creating  'Default' profile ...".to_string());
-                return Task::perform(async {
+                // Primo avvio: crea il profilo Default dal file hosts di sistema
+                state.set_success(format!("Creazione del profilo '{}'...", db_manager::DEFAULT_PROFILE_NAME));
+                return db_task(|conn| {
                     let hosts = host_manager::load_hosts_entries();
-                    let conn = db_manager::initialize_db()?;
-                    db_manager::create_profile(&conn, "Default", &hosts)?;
-                    Ok(())
-                }, |result: Result<(), rusqlite::Error>| {
-                    match result {
-                        Ok(_) => Message::LoadProfiles,
-                        Err(e) => Message::SaveError(format!("Error creating default profile: {}", e)),
-                    }
+                    db_manager::create_profile(conn, db_manager::DEFAULT_PROFILE_NAME, &hosts)
+                }, |result| match result {
+                    Ok(_) => Message::LoadProfiles,
+                    Err(e) => Message::SaveError(format!("Errore nella creazione del profilo di default: {}", e)),
                 });
-            } else {
-                state.profiles = profiles;
-
-
-                let active_profile = state.profiles.iter().find(|p| p.is_active).cloned();
-
-                if let Some(profile) = active_profile {
-                    state.selected_profile = Some(profile.clone());
-                    state.file_lines = profile.hosts.clone();
-                    state.success_message = Some(format!("Profile loaded: {}", profile.name));
-                } else {
-                    state.selected_profile = state.profiles.first().cloned();
-                    if let Some(profile) = &state.selected_profile {
-                        state.file_lines = profile.hosts.clone();
-                        state.success_message = Some(format!("Default profile loaded: {}", profile.name));
-                    }
-                }
             }
+
+            let selected = profiles.iter().find(|p| p.is_active).or(profiles.first());
+            if let Some(profile) = selected {
+                state.set_success(format!("Profilo caricato: {}", profile.name));
+                state.selected_profile_id = Some(profile.id.clone());
+            }
+            state.profiles = profiles;
+            state.cancel_edit();
         }
         Message::LoadProfilesResult(Err(e)) => {
-            state.error_message = Some(e);
+            state.set_error(e);
         }
 
-        Message::ProfileSelected(profile) => {
-            state.selected_profile = Some(profile.clone());
+        Message::ProfileSelected(profile_id) => {
+            let Some(profile) = state.profiles.iter().find(|p| p.id == profile_id) else {
+                return Task::none();
+            };
+            let entries_to_save = profile.hosts.clone();
+            state.set_success(format!("Profilo attivato: {}", profile.name));
 
-            state.file_lines = profile.hosts.clone();
+            for p in &mut state.profiles {
+                p.is_active = p.id == profile_id;
+            }
+            state.selected_profile_id = Some(profile_id.clone());
+            state.cancel_edit();
 
-            let entries_to_save = state.file_lines.clone();
-            let profile_id_to_activate = profile.id.clone();
-
-            return Task::batch(vec![
-                Task::perform(async move {
-                    write_hosts_entries_to_file(&entries_to_save)
-                        .map_err(|e| e.to_string())
-                }, |result| {
-                    match result {
-                        Ok(_) => Message::SaveSuccess,
-                        Err(e) => Message::SaveError(e),
-                    }
+            return Task::batch([
+                write_hosts_task(entries_to_save),
+                db_task(move |conn| db_manager::set_active_profile(conn, &profile_id), |result| {
+                    Message::UpdateDatabaseResult(result.map_err(|e| format!("Errore nell'attivazione del profilo: {}", e)))
                 }),
-                Task::perform(async move {
-                    let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
-                    db_manager::set_active_profile(&conn, &profile_id_to_activate)
-                        .map_err(|e| e.to_string())
-                }, |result| {
-                    match result {
-                        Ok(_) => Message::LoadProfiles,
-                        Err(e) => Message::SaveError(format!("Errore nell'attivazione del profilo: {}", e)),
-                    }
-                })
             ]);
         }
         Message::NewProfileNameChanged(name) => {
             state.new_profile_name = name;
         }
         Message::CreateProfileButtonPressed => {
-            let name = state.new_profile_name.clone();
+            let name = state.new_profile_name.trim().to_string();
             if name.is_empty() {
-                state.error_message = Some("Il nome del profilo non può essere vuoto.".to_string());
+                state.set_error("Il nome del profilo non può essere vuoto.");
+                return Task::none();
+            }
+            if state.profiles.iter().any(|p| p.name == name) {
+                state.set_error(format!("Un profilo con il nome '{}' esiste già.", name));
                 return Task::none();
             }
 
-
-            let mut current_hosts =Vec::new();
-
-            let localhost_entry = Line::Entry(Entry {
-                ip: "127.0.0.1".to_string(),
-                hostname: "localhost".to_string(),
-                enabled: true,
-                comment: None,
+            let hosts = vec![Line::Entry(Entry::localhost())];
+            return db_task(move |conn| db_manager::create_profile(conn, &name, &hosts), |result| {
+                Message::ProfileCreated(result.map_err(|e| format!("Errore nella creazione del profilo: {}", e)))
             });
-
-            if !current_hosts.contains(&localhost_entry) {
-                current_hosts.insert(0, localhost_entry);
-            }
-
-            return Task::perform(async move {
-                let conn = db_manager::initialize_db()?;
-                db_manager::create_profile(&conn, &name, &current_hosts)?;
-                Ok(())
-            }, |result: Result<(), rusqlite::Error>| {
-                match result {
-                    Ok(_) => Message::LoadProfiles,
-                    Err(e) => Message::SaveError(format!("Errore nella creazione del profilo: {}", e)),
-                }
-            });
+        }
+        Message::ProfileCreated(Ok(profile)) => {
+            state.set_success(format!("Profilo creato: {}", profile.name));
+            state.new_profile_name.clear();
+            state.profiles.push(profile);
+        }
+        Message::ProfileCreated(Err(e)) => {
+            state.set_error(e);
         }
         Message::ShowMainView => {
             state.view = View::Main;
@@ -408,138 +388,162 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             state.view = View::Profiles;
         }
         Message::DeleteProfile(profile_id) => {
-            if let Some(selected_profile) = &state.selected_profile {
-                if selected_profile.id == profile_id && selected_profile.name == "Default" {
-                    state.error_message = Some("Impossibile eliminare il profilo 'Default'.".to_string());
-                    return Task::none();
-                }
+            let Some(profile) = state.profiles.iter().find(|p| p.id == profile_id) else {
+                return Task::none();
+            };
+            if profile.is_default() {
+                state.set_error(format!("Impossibile eliminare il profilo '{}'.", db_manager::DEFAULT_PROFILE_NAME));
+                return Task::none();
+            }
+            if state.selected_profile_id.as_ref() == Some(&profile_id) {
+                state.set_error("Impossibile eliminare il profilo attivo. Seleziona un altro profilo prima di procedere.");
+                return Task::none();
             }
 
-            if let Some(selected_profile) = &state.selected_profile {
-                if selected_profile.id == profile_id {
-                    state.error_message = Some("Impossibile eliminare il profilo attivo. Seleziona un altro profilo prima di procedere.".to_string());
-                    return Task::none();
-                }
-            }
+            state.set_success("Eliminazione del profilo...");
 
-            state.success_message = Some("Eliminazione del profilo...".to_string());
-
-            return Task::perform(async move {
-                let conn = db_manager::initialize_db()?;
-                db_manager::delete_profile(&conn, &profile_id)?;
-                Ok(())
-            }, |result: Result<(), rusqlite::Error>| {
-                match result {
-                    Ok(_) => Message::LoadProfiles,
-                    Err(e) => Message::SaveError(format!("Errore nell'eliminazione del profilo: {}", e)),
-                }
+            return db_task(move |conn| {
+                db_manager::delete_profile(conn, &profile_id)?;
+                Ok(profile_id)
+            }, |result| {
+                Message::ProfileDeleted(result.map_err(|e| format!("Errore nell'eliminazione del profilo: {}", e)))
             });
+        }
+        Message::ProfileDeleted(Ok(profile_id)) => {
+            state.profiles.retain(|p| p.id != profile_id);
+            state.set_success("Profilo eliminato.");
+        }
+        Message::ProfileDeleted(Err(e)) => {
+            state.set_error(e);
         }
         Message::UpdateDatabaseResult(Ok(_)) => {
         }
         Message::UpdateDatabaseResult(Err(e)) => {
-            state.error_message = Some(format!("Database update error: {}", e));
+            state.set_error(format!("Errore di aggiornamento del database: {}", e));
         }
 
         Message::ExportProfilesButtonPressed => {
-            if let Some(profile) = &state.selected_profile {
-                let profile_to_export = profile.clone();
-                state.success_message = Some("Apertura finestra di dialogo...".to_string());
+            let Some(profile_to_export) = state.selected_profile().cloned() else {
+                state.set_error("Seleziona un profilo da esportare.");
+                return Task::none();
+            };
+            state.set_success("Apertura finestra di dialogo...");
 
-                return Task::perform(async move {
-                    let file_path = rfd::AsyncFileDialog::new()
-                        .add_filter("JSON Profile", &["json"])
-                        .set_file_name(&format!("{}.json", profile_to_export.name))
-                        .save_file()
-                        .await;
+            return Task::perform(async move {
+                let file = rfd::AsyncFileDialog::new()
+                    .add_filter("JSON Profile", &["json"])
+                    .set_file_name(format!("{}.json", profile_to_export.name))
+                    .save_file()
+                    .await
+                    .ok_or("Operazione di esportazione annullata.")?;
 
-                    if let Some(file) = file_path {
-                        let json_data = serde_json::to_string_pretty(&profile_to_export)
-                            .map_err(|e| format!("Errore di serializzazione: {}", e))?;
+                let json_data = serde_json::to_string_pretty(&profile_to_export)
+                    .map_err(|e| format!("Errore di serializzazione: {}", e))?;
 
-                        std::fs::write(file.path(), json_data)
-                            .map_err(|e| format!("Errore di scrittura del file: {}", e))?;
-
-                        Ok(())
-                    } else {
-                        Err("Operazione di esportazione annullata.".to_string())
-                    }
-                }, |result| Message::ExportProfilesResult(result));
-            } else {
-                state.error_message = Some("Seleziona un profilo da esportare.".to_string());
-            }
-
+                std::fs::write(file.path(), json_data)
+                    .map_err(|e| format!("Errore di scrittura del file: {}", e))
+            }, Message::ExportProfilesResult);
         }
         Message::ImportProfilesButtonPressed => {
-            state.success_message = Some("Apertura finestra di dialogo...".to_string());
+            state.set_success("Apertura finestra di dialogo...");
 
             return Task::perform(async {
-                let file_path = rfd::AsyncFileDialog::new()
+                let file = rfd::AsyncFileDialog::new()
                     .add_filter("JSON Profile", &["json"])
                     .pick_file()
-                    .await;
+                    .await
+                    .ok_or("Operazione di importazione annullata.")?;
 
-                if let Some(file) = file_path {
-                    let json_data = std::fs::read_to_string(file.path())
-                        .map_err(|e| format!("Errore di lettura del file: {}", e))?;
+                let json_data = std::fs::read_to_string(file.path())
+                    .map_err(|e| format!("Errore di lettura del file: {}", e))?;
 
-                    let imported_profile: Profile = serde_json::from_str(&json_data)
-                        .map_err(|e| format!("Errore di deserializzazione: {}", e))?;
+                let imported_profile: Profile = serde_json::from_str(&json_data)
+                    .map_err(|e| format!("Errore di deserializzazione: {}", e))?;
 
-                    let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
-                    db_manager::import_profile(&conn, &imported_profile)
-                        .map_err(|e| format!("Errore di importazione: {}", e))?;
-
-                    Ok(())
-                } else {
-                    Err("Operazione di importazione annullata.".to_string())
-                }
-            }, |result| Message::ImportProfilesResult(result));
+                let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
+                db_manager::import_profile(&conn, &imported_profile)
+                    .map_err(|e| format!("Errore di importazione: {}", e))
+            }, Message::ImportProfilesResult);
         }
         Message::ExportProfilesResult(Ok(_)) => {
-            state.success_message = Some("Profilo esportato con successo!".to_string());
+            state.set_success("Profilo esportato con successo!");
         }
         Message::ExportProfilesResult(Err(e)) => {
-            state.error_message = Some(e);
+            state.set_error(e);
         }
 
-        Message::ImportProfilesResult(Ok(_)) => {
-            state.success_message = Some("Profilo importato con successo!".to_string());
-            let _ = Task::perform(async { Message::LoadProfiles }, |msg| msg);
+        Message::ImportProfilesResult(Ok(profile)) => {
+            state.set_success(format!("Profilo importato con successo: {}", profile.name));
+            state.profiles.push(profile);
         }
         Message::ImportProfilesResult(Err(e)) => {
-            state.error_message = Some(e);
+            state.set_error(e);
+        }
+
+        Message::SearchQueryChanged(query) => {
+            state.search_query = query;
+        }
+        Message::ClearSearch => {
+            state.search_query.clear();
+        }
+
+        Message::CheckHostsPermission => {
+            return blocking_task(privileges::check_hosts_permission, Message::HostsPermissionChecked);
+        }
+        Message::HostsPermissionChecked(permission) => {
+            state.hosts_permission = Some(permission);
+        }
+        Message::InstallSudoersPressed => {
+            state.set_success("Inserisci la password di amministratore nella finestra di sistema...");
+            return blocking_task(
+                || privileges::install_sudoers_rule().map(|_| "Permessi configurati: l'app può modificare il file hosts.".to_string()),
+                Message::SudoersResult,
+            );
+        }
+        Message::RemoveSudoersPressed => {
+            state.set_success("Inserisci la password di amministratore nella finestra di sistema...");
+            return blocking_task(
+                || privileges::remove_sudoers_rule().map(|_| "Regola sudoers rimossa.".to_string()),
+                Message::SudoersResult,
+            );
+        }
+        Message::SudoersResult(result) => {
+            match result {
+                Ok(msg) => state.set_success(msg),
+                Err(e) => state.set_error(e),
+            }
+            return Task::done(Message::CheckHostsPermission);
         }
 
     }
 
     Task::none()
 }
-pub fn view(state: &MyApp) -> Element<Message> {
+pub fn view(state: &MyApp) -> Element<'_, Message> {
     match state.view {
         View::Main => main_view(state),
         View::Profiles => profile_view::view(state),
     }
 }
 
-
-fn main_view(state: &MyApp) -> Element<Message> {
-
-
-    let status_label: Text<'_, Theme, Renderer> = if let Some(msg) = &state.error_message {
-        println!("{}", msg);
+// Messaggio di stato (rosso per gli errori, verde per il successo), condiviso tra le viste
+pub fn status_label(state: &MyApp) -> Text<'_, Theme, Renderer> {
+    if let Some(msg) = &state.error_message {
         text(msg).size(16).color(Color::from_rgb(0.8, 0.2, 0.2))
     } else if let Some(msg) = &state.success_message {
-        println!("{}", msg);
         text(msg).size(16).color(Color::from_rgb(0.2, 0.7, 0.2))
     } else {
         text("")
-    };
+    }
+}
 
-    let selected_profile_name = state.selected_profile
-        .as_ref()
-        .map(|p| p.name.clone())
-        .unwrap_or_else(|| "No Profile Selected".to_string());
+
+fn main_view(state: &MyApp) -> Element<'_, Message> {
+    let selected_profile = state.selected_profile();
+
+    let selected_profile_name = selected_profile
+        .map(|p| p.name.as_str())
+        .unwrap_or("Nessun profilo selezionato");
 
     let profile_info_row = row![
         text(format!("Profilo attuale: {}", selected_profile_name))
@@ -559,9 +563,10 @@ fn main_view(state: &MyApp) -> Element<Message> {
             &state.input_text,
         )
         .on_input(Message::InputChanged)
+        .on_submit(Message::DnsLookupButtonPressed)
         .width(Length::Fill),
          text_input(
-            "DNS server (es:8.8.8.8)",
+            "DNS server (vuoto = DNS di sistema)",
             &state.input_text_dns,
         )
         .on_input(Message::InputDNSChanged)
@@ -579,10 +584,11 @@ fn main_view(state: &MyApp) -> Element<Message> {
         .on_input(Message::InputIpChanged)
         .width(Length::Fill),
         text_input(
-            "Hostname (es: server.local)",
+            "Hostname, anche più di uno (es: server.local api.local)",
             &state.input_hostname,
         )
         .on_input(Message::InputHostnameChanged)
+        .on_submit(Message::ManualAddButtonPressed)
         .width(Length::Fill),
         button("Aggiungi Manuale").on_press(Message::ManualAddButtonPressed),
     ]
@@ -595,16 +601,26 @@ fn main_view(state: &MyApp) -> Element<Message> {
             dns_lookup_section,
             text("oppure").size(14).color(Color::from_rgb(0.5, 0.5, 0.5)),
             manual_add_section,
-            status_label,
+            status_label(state),
         ]
             .spacing(10)
     )
         .padding(15)
         .style(container::rounded_box);
 
-    let entries: Vec<Element<Message>> = state.file_lines
+    let is_searching = !state.search_query.trim().is_empty();
+    let hosts: &[Line] = selected_profile.map(|p| p.hosts.as_slice()).unwrap_or(&[]);
+
+    // Durante la ricerca mostra solo i record il cui hostname corrisponde,
+    // nascondendo commenti e righe vuote. L'indice resta quello originale
+    // dei record del profilo, così Modifica/Elimina agiscono sul record corretto.
+    let entries: Vec<Element<Message>> = hosts
         .iter()
         .enumerate()
+        .filter(|(_, line)| match line {
+            Line::Entry(entry) => hostname_matches(entry, &state.search_query),
+            _ => !is_searching,
+        })
         .map(|(index, line)| {
             match line {
                 Line::Entry(entry) => {
@@ -612,9 +628,11 @@ fn main_view(state: &MyApp) -> Element<Message> {
                         row![
                             text_input("IP", &state.editing_ip)
                                 .on_input(Message::EditIpChanged)
+                                .on_submit(Message::SaveEditedEntry)
                                 .width(Length::Fill),
                             text_input("Hostname", &state.editing_hostname)
                                 .on_input(Message::EditHostnameChanged)
+                                .on_submit(Message::SaveEditedEntry)
                                 .width(Length::Fill),
                             button("Salva").on_press(Message::SaveEditedEntry),
                             button("Annulla").on_press(Message::CancelEdit),
@@ -624,20 +642,26 @@ fn main_view(state: &MyApp) -> Element<Message> {
                             .align_y(Alignment::Center)
                             .into()
                     } else {
-                        let is_localhost = entry.ip == "127.0.0.1" && entry.hostname == "localhost";
-                        let mut delete_button  =  button("Elimina").on_press(Message::DeleteEntry(index)).into();
-                        let mut modify_button =  button("Modifica").on_press(Message::EditEntry(index));
+                        // Il record localhost è gestito dall'app: non modificabile
+                        let editable = !entry.is_localhost();
 
-                        if is_localhost {
-                            delete_button= button("Elimina");
-                            modify_button= button("Modifica");
+                        let mut label = format!("{:<15} {}", entry.ip, entry.names());
+                        if let Some(comment) = &entry.comment {
+                            label.push_str(&format!("  # {}", comment));
                         }
-                        
+                        let mut label = text(label).width(Length::Fill);
+                        if !entry.enabled {
+                            label = label.color(Color::from_rgb(0.5, 0.5, 0.5));
+                        }
+
                         row![
-                            text(format!("{:<15} {}", entry.ip, entry.hostname))
-                                .width(Length::Fill),
-                            modify_button,
-                            delete_button,
+                            label,
+                            button(if entry.enabled { "Disattiva" } else { "Attiva" })
+                                .on_press_maybe(editable.then_some(Message::ToggleEntry(index))),
+                            button("Modifica")
+                                .on_press_maybe(editable.then_some(Message::EditEntry(index))),
+                            button("Elimina")
+                                .on_press_maybe(editable.then_some(Message::DeleteEntry(index))),
                         ]
                             .spacing(5)
                             .padding(5)
@@ -651,21 +675,57 @@ fn main_view(state: &MyApp) -> Element<Message> {
         })
         .collect();
 
+    let results_label = if !is_searching {
+        text("")
+    } else if entries.is_empty() {
+        text("Nessun record trovato.")
+    } else {
+        text(format!("{} record trovati", entries.len()))
+    };
+
+    let search_section = row![
+        text_input("Cerca per hostname...", &state.search_query)
+            .on_input(Message::SearchQueryChanged)
+            .width(Length::Fill),
+        button("Pulisci").on_press_maybe(is_searching.then_some(Message::ClearSearch)),
+        results_label.size(14).color(Color::from_rgb(0.5, 0.5, 0.5)),
+    ]
+        .spacing(10)
+        .align_y(Alignment::Center);
+
     let scrollable_entries = scrollable(column(entries).padding(5).spacing(5)).height(Length::Fill).spacing(10);
 
-    let content = column![
+    column![
         Space::with_height(10),
         profile_info_row,
+        permission_warning(state),
         Space::with_height(20),
         add_host_section,
         Space::with_height(20),
         text("Record nel file hosts:").size(22).color(Color::from_rgb(0.1, 0.5, 0.8)),
+        search_section,
         scrollable_entries,
     ]
         .spacing(15)
-        .padding(20);
+        .padding(20)
+        .into()
+}
 
-    content.into()
+// Avviso mostrato nella vista principale quando l'app non può scrivere il file hosts
+fn permission_warning(state: &MyApp) -> Element<'_, Message> {
+    if state.hosts_permission != Some(HostsPermission::Missing) {
+        return Space::with_height(0).into();
+    }
+
+    row![
+        text(format!("Permessi mancanti: le modifiche non verranno scritte in {}.", privileges::HOSTS_PATH))
+            .color(Color::from_rgb(0.9, 0.6, 0.2))
+            .width(Length::Fill),
+        button("Configura permessi").on_press(Message::InstallSudoersPressed),
+    ]
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .into()
 }
 
 fn theme(_state: &MyApp) -> Theme {
@@ -675,22 +735,10 @@ fn theme(_state: &MyApp) -> Theme {
 
 pub fn init_app() -> iced::Result {
     let initial_state = MyApp {
-        input_text: String::new(),
-        input_text_dns: "10.10.10.10".to_string(),
-        input_ip: String::new(),
-        input_hostname: String::new(),
-        file_lines: Vec::new(),
-        editing_index: None,
-        editing_ip: String::new(),
-        editing_hostname: String::new(),
-        error_message: None,
-        success_message: None,
-        profiles: Vec::new(),
-        selected_profile: None,
-        new_profile_name: String::new(),
-        view: View::Main,
+        input_text_dns: std::env::var("HOSTS_MANAGER_DNS")
+            .unwrap_or_else(|_| DEFAULT_DNS_SERVER.to_string()),
+        ..Default::default()
     };
-
 
     iced::application("Hosts manager", update, view)
         .theme(theme)
@@ -698,8 +746,10 @@ pub fn init_app() -> iced::Result {
             ..Default::default()
         })
         .run_with(|| {
-            (initial_state, Task::perform(async {}, |_| Message::LoadProfiles))
+            (initial_state, Task::batch([
+                Task::done(Message::LoadProfiles),
+                Task::done(Message::CheckHostsPermission),
+            ]))
         })
 
 }
-
