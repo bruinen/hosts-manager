@@ -64,13 +64,13 @@ The app is not notarized: on first launch right-click the app and choose **Open*
 
 The application runs as a normal user (do **not** start it with `sudo`).
 
-* **macOS**: if `/etc/hosts` is not writable, open **Gestisci Profili → Configura permessi**. After you enter the administrator password once, the app installs `/etc/sudoers.d/hosts-manager`, which lets **only your user** run **only** this command without a password:
+* **macOS**: if `/etc/hosts` is not writable, click **Configura permessi** at the bottom of the sidebar. After you enter the administrator password once, the app installs `/etc/sudoers.d/hosts-manager`, which lets **only your user** run **only** this command without a password:
 
   ```
   <user> ALL=(root) NOPASSWD: /usr/bin/tee /etc/hosts
   ```
 
-  The rule is checked with `visudo -c` before it is installed, and you can remove it with **Rimuovi permessi**.
+  The rule is checked with `visudo -c` before it is installed, and you can remove it with **Rimuovi** next to the permission status.
 
 * **Linux**: add the same rule by hand with `sudo visudo -f /etc/sudoers.d/hosts-manager`.
 

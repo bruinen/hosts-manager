@@ -1,7 +1,6 @@
-use iced::{Alignment, Color, Element, Length, Task, Theme,
-           widget::{column, Text, text, button, text_input, row, scrollable, container, Space}, Settings, Renderer};
-use crate::host_manager::{Line, write_hosts_entries_to_file, Entry, hostname_matches};
-use crate::{host_manager, profile_view, db_manager};
+use iced::{window, Size, Task, Theme, Settings};
+use crate::host_manager::{Line, write_hosts_entries_to_file, Entry};
+use crate::{host_manager, db_manager, style, view};
 use crate::db_manager::{update_profile, Profile};
 use crate::dns_lookup::resolve_hostname_with_specific_dns;
 use crate::privileges::{self, PermissionStatus};
@@ -9,12 +8,12 @@ use crate::privileges::{self, PermissionStatus};
 // Server DNS proposto all'avvio, sovrascrivibile con la variabile d'ambiente HOSTS_MANAGER_DNS
 const DEFAULT_DNS_SERVER: &str = "10.10.10.10";
 
-// Enum for the current view
+// Modalità del riquadro "Aggiungi record"
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum View {
+pub enum AddMode {
     #[default]
-    Main,
-    Profiles,
+    Manual,
+    Dns,
 }
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -42,8 +41,10 @@ pub enum Message {
     ProfileCreated(Result<Profile, String>),
     LoadProfiles,
     LoadProfilesResult(Result<Vec<Profile>, String>),
-    ShowMainView,
-    ShowProfilesView,
+    AddModeChanged(AddMode),
+    ShowCommentsToggled(bool),
+    RequestDeleteProfile(String),
+    CancelDeleteProfile,
     DeleteProfile(String),
     ProfileDeleted(Result<String, String>),
     UpdateDatabaseResult(Result<(), String>),
@@ -97,7 +98,10 @@ pub struct MyApp {
     pub profiles: Vec<Profile>,
     pub selected_profile_id: Option<String>,
     pub new_profile_name: String,
-    pub view: View,
+    pub add_mode: AddMode,
+    pub show_comments: bool,
+    pub confirm_delete_profile: Option<String>,
+    pub theme: Theme,
     pub search_query: String,
     pub hosts_permission: Option<PermissionStatus>,
 }
@@ -381,13 +385,20 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::ProfileCreated(Err(e)) => {
             state.set_error(e);
         }
-        Message::ShowMainView => {
-            state.view = View::Main;
+        Message::AddModeChanged(mode) => {
+            state.add_mode = mode;
         }
-        Message::ShowProfilesView => {
-            state.view = View::Profiles;
+        Message::ShowCommentsToggled(show) => {
+            state.show_comments = show;
+        }
+        Message::RequestDeleteProfile(profile_id) => {
+            state.confirm_delete_profile = Some(profile_id);
+        }
+        Message::CancelDeleteProfile => {
+            state.confirm_delete_profile = None;
         }
         Message::DeleteProfile(profile_id) => {
+            state.confirm_delete_profile = None;
             let Some(profile) = state.profiles.iter().find(|p| p.id == profile_id) else {
                 return Task::none();
             };
@@ -519,223 +530,8 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
 
     Task::none()
 }
-pub fn view(state: &MyApp) -> Element<'_, Message> {
-    match state.view {
-        View::Main => main_view(state),
-        View::Profiles => profile_view::view(state),
-    }
-}
-
-// Messaggio di stato (rosso per gli errori, verde per il successo), condiviso tra le viste
-pub fn status_label(state: &MyApp) -> Text<'_, Theme, Renderer> {
-    if let Some(msg) = &state.error_message {
-        text(msg).size(16).color(Color::from_rgb(0.8, 0.2, 0.2))
-    } else if let Some(msg) = &state.success_message {
-        text(msg).size(16).color(Color::from_rgb(0.2, 0.7, 0.2))
-    } else {
-        text("")
-    }
-}
-
-
-fn main_view(state: &MyApp) -> Element<'_, Message> {
-    let selected_profile = state.selected_profile();
-
-    let selected_profile_name = selected_profile
-        .map(|p| p.name.as_str())
-        .unwrap_or("Nessun profilo selezionato");
-
-    let profile_info_row = row![
-        text(format!("Profilo attuale: {}", selected_profile_name))
-            .size(18)
-            .color(Color::from_rgb(0.9, 0.9, 0.9)),
-        Space::with_width(Length::Fill),
-        button("Gestisci Profili")
-            .on_press(Message::ShowProfilesView)
-            .width(Length::Shrink),
-    ]
-        .spacing(10)
-        .align_y(Alignment::Center);
-
-    let dns_lookup_section = row![
-        text_input(
-            "Hostname per DNS Lookup (es: google.com)",
-            &state.input_text,
-        )
-        .on_input(Message::InputChanged)
-        .on_submit(Message::DnsLookupButtonPressed)
-        .width(Length::Fill),
-         text_input(
-            "DNS server (vuoto = DNS di sistema)",
-            &state.input_text_dns,
-        )
-        .on_input(Message::InputDNSChanged)
-        .width(Length::Fill),
-        button("Cerca IP (DNS)").on_press(Message::DnsLookupButtonPressed),
-    ]
-        .spacing(10)
-        .align_y(Alignment::Center);
-
-    let manual_add_section = row![
-        text_input(
-            "IP (es: 192.168.1.1)",
-            &state.input_ip,
-        )
-        .on_input(Message::InputIpChanged)
-        .width(Length::Fill),
-        text_input(
-            "Hostname, anche più di uno (es: server.local api.local)",
-            &state.input_hostname,
-        )
-        .on_input(Message::InputHostnameChanged)
-        .on_submit(Message::ManualAddButtonPressed)
-        .width(Length::Fill),
-        button("Aggiungi Manuale").on_press(Message::ManualAddButtonPressed),
-    ]
-        .spacing(10)
-        .align_y(Alignment::Center);
-
-    let add_host_section = container(
-        column![
-            text("Aggiungi un nuovo record:").size(22).color(Color::from_rgb(0.1, 0.5, 0.8)),
-            dns_lookup_section,
-            text("oppure").size(14).color(Color::from_rgb(0.5, 0.5, 0.5)),
-            manual_add_section,
-            status_label(state),
-        ]
-            .spacing(10)
-    )
-        .padding(15)
-        .style(container::rounded_box);
-
-    let is_searching = !state.search_query.trim().is_empty();
-    let hosts: &[Line] = selected_profile.map(|p| p.hosts.as_slice()).unwrap_or(&[]);
-
-    // Durante la ricerca mostra solo i record il cui hostname corrisponde,
-    // nascondendo commenti e righe vuote. L'indice resta quello originale
-    // dei record del profilo, così Modifica/Elimina agiscono sul record corretto.
-    let entries: Vec<Element<Message>> = hosts
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| match line {
-            Line::Entry(entry) => hostname_matches(entry, &state.search_query),
-            _ => !is_searching,
-        })
-        .map(|(index, line)| {
-            match line {
-                Line::Entry(entry) => {
-                    if state.editing_index == Some(index) {
-                        row![
-                            text_input("IP", &state.editing_ip)
-                                .on_input(Message::EditIpChanged)
-                                .on_submit(Message::SaveEditedEntry)
-                                .width(Length::Fill),
-                            text_input("Hostname", &state.editing_hostname)
-                                .on_input(Message::EditHostnameChanged)
-                                .on_submit(Message::SaveEditedEntry)
-                                .width(Length::Fill),
-                            button("Salva").on_press(Message::SaveEditedEntry),
-                            button("Annulla").on_press(Message::CancelEdit),
-                        ]
-                            .spacing(5)
-                            .padding(5)
-                            .align_y(Alignment::Center)
-                            .into()
-                    } else {
-                        // Il record localhost è gestito dall'app: non modificabile
-                        let editable = !entry.is_localhost();
-
-                        let mut label = format!("{:<15} {}", entry.ip, entry.names());
-                        if let Some(comment) = &entry.comment {
-                            label.push_str(&format!("  # {}", comment));
-                        }
-                        let mut label = text(label).width(Length::Fill);
-                        if !entry.enabled {
-                            label = label.color(Color::from_rgb(0.5, 0.5, 0.5));
-                        }
-
-                        row![
-                            label,
-                            button(if entry.enabled { "Disattiva" } else { "Attiva" })
-                                .on_press_maybe(editable.then_some(Message::ToggleEntry(index))),
-                            button("Modifica")
-                                .on_press_maybe(editable.then_some(Message::EditEntry(index))),
-                            button("Elimina")
-                                .on_press_maybe(editable.then_some(Message::DeleteEntry(index))),
-                        ]
-                            .spacing(5)
-                            .padding(5)
-                            .align_y(Alignment::Center)
-                            .into()
-                    }
-                },
-                Line::Comment(comment) => text(comment).color(Color::from_rgb(0.5, 0.5, 0.5)).into(),
-                Line::Empty => text("").into(),
-            }
-        })
-        .collect();
-
-    let results_label = if !is_searching {
-        text("")
-    } else if entries.is_empty() {
-        text("Nessun record trovato.")
-    } else {
-        text(format!("{} record trovati", entries.len()))
-    };
-
-    let search_section = row![
-        text_input("Cerca per hostname...", &state.search_query)
-            .on_input(Message::SearchQueryChanged)
-            .width(Length::Fill),
-        button("Pulisci").on_press_maybe(is_searching.then_some(Message::ClearSearch)),
-        results_label.size(14).color(Color::from_rgb(0.5, 0.5, 0.5)),
-    ]
-        .spacing(10)
-        .align_y(Alignment::Center);
-
-    let scrollable_entries = scrollable(column(entries).padding(5).spacing(5)).height(Length::Fill).spacing(10);
-
-    column![
-        Space::with_height(10),
-        profile_info_row,
-        permission_warning(state),
-        Space::with_height(20),
-        add_host_section,
-        Space::with_height(20),
-        text("Record nel file hosts:").size(22).color(Color::from_rgb(0.1, 0.5, 0.8)),
-        search_section,
-        scrollable_entries,
-    ]
-        .spacing(15)
-        .padding(20)
-        .into()
-}
-
-// Avviso mostrato nella vista principale quando l'app non può scrivere il file hosts
-fn permission_warning(state: &MyApp) -> Element<'_, Message> {
-    let Some(status) = state.hosts_permission.filter(PermissionStatus::needs_setup) else {
-        return Space::with_height(0).into();
-    };
-
-    let warning = if status.data_dir_writable {
-        format!("Permessi mancanti: le modifiche non verranno scritte in {}.", privileges::HOSTS_PATH)
-    } else {
-        "Permessi mancanti: la cartella dei profili appartiene a root, le modifiche non verranno salvate.".to_string()
-    };
-
-    row![
-        text(warning)
-            .color(Color::from_rgb(0.9, 0.6, 0.2))
-            .width(Length::Fill),
-        button("Configura permessi").on_press(Message::InstallSudoersPressed),
-    ]
-        .spacing(10)
-        .align_y(Alignment::Center)
-        .into()
-}
-
-fn theme(_state: &MyApp) -> Theme {
-    Theme::TokyoNight
+fn theme(state: &MyApp) -> Theme {
+    state.theme.clone()
 }
 
 
@@ -743,12 +539,21 @@ pub fn init_app() -> iced::Result {
     let initial_state = MyApp {
         input_text_dns: std::env::var("HOSTS_MANAGER_DNS")
             .unwrap_or_else(|_| DEFAULT_DNS_SERVER.to_string()),
+        theme: style::app_theme(),
         ..Default::default()
     };
 
-    iced::application("Hosts manager", update, view)
+    iced::application("Hosts Manager", update, view::view)
         .theme(theme)
         .settings(Settings {
+            default_font: style::FONT,
+            default_text_size: 14.into(),
+            antialiasing: true,
+            ..Default::default()
+        })
+        .window(window::Settings {
+            size: Size::new(1120.0, 740.0),
+            min_size: Some(Size::new(880.0, 560.0)),
             ..Default::default()
         })
         .run_with(|| {
