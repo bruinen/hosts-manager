@@ -38,7 +38,7 @@ impl fmt::Display for Profile {
 fn db_path() -> &'static PathBuf {
     DB_PATH.get_or_init(|| {
         let mut path = dirs::data_dir().unwrap_or_else(|| {
-            eprintln!("Impossibile trovare la directory dei dati dell'applicazione, verrà usato il percorso locale.");
+            eprintln!("Application data directory not found, using the local directory.");
             PathBuf::from(".")
         });
         path.push("hosts_manager");
@@ -150,7 +150,7 @@ pub fn import_profile(conn: &Connection, profile: &Profile) -> Result<Profile> {
     if count > 0 {
         return Err(rusqlite::Error::SqliteFailure(
             Error::new(1),
-            Some(format!("Un profilo con il nome '{}' esiste già.", profile.name)),
+            Some(format!("A profile named '{}' already exists.", profile.name)),
         ));
     }
 

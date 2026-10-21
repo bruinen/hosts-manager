@@ -165,14 +165,14 @@ fn blocking_task<T: Send + 'static>(
     on_result: impl Fn(T) -> Message + Send + 'static,
 ) -> Task<Message> {
     Task::perform(async move {
-        tokio::task::spawn_blocking(operation).await.expect("task bloccante interrotto")
+        tokio::task::spawn_blocking(operation).await.expect("blocking task panicked")
     }, on_result)
 }
 
 // Applica una modifica ai record del profilo selezionato e la salva su file hosts e database
 fn update_entries(state: &mut MyApp, change: impl FnOnce(&mut Vec<Line>)) -> Task<Message> {
     let Some(profile) = state.selected_profile_mut() else {
-        state.set_error("Nessun profilo selezionato.");
+        state.set_error("No profile selected.");
         return Task::none();
     };
 
@@ -220,10 +220,10 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             let hostname = state.input_text.trim().to_string();
             let dns_server = state.input_text_dns.clone();
             if hostname.is_empty() {
-                state.set_error("L'hostname è obbligatorio per il DNS lookup.");
+                state.set_error("A hostname is required for the DNS lookup.");
                 return Task::none();
             }
-            state.set_success("Ricerca IP in corso...");
+            state.set_success("Resolving IP...");
 
             return Task::perform(async move {
                 let ip = resolve_hostname_with_specific_dns(&hostname, &dns_server).await?;
@@ -231,7 +231,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             }, Message::DnsLookupResult);
         }
         Message::DnsLookupResult(Ok(entry)) => {
-            state.set_success(format!("IP trovato: {} → {}", entry.hostname, entry.ip));
+            state.set_success(format!("IP found: {} → {}", entry.hostname, entry.ip));
             if state.input_text.trim() == entry.hostname {
                 state.input_text.clear();
             }
@@ -302,7 +302,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::SaveSuccess => {
             // Non sovrascrivere un messaggio più specifico (es: IP trovato, profilo attivato)
             if state.error_message.is_none() && state.success_message.is_none() {
-                state.set_success("Modifiche salvate.");
+                state.set_success("Changes saved.");
             }
         }
         Message::SaveError(e) => {
@@ -310,25 +310,25 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         }
         Message::LoadProfiles => {
             return db_task(db_manager::get_all_profiles, |result| {
-                Message::LoadProfilesResult(result.map_err(|e| format!("Errore nel caricamento dei profili: {}", e)))
+                Message::LoadProfilesResult(result.map_err(|e| format!("Error loading profiles: {}", e)))
             });
         }
         Message::LoadProfilesResult(Ok(profiles)) => {
             if profiles.is_empty() {
                 // Primo avvio: crea il profilo Default dal file hosts di sistema
-                state.set_success(format!("Creazione del profilo '{}'...", db_manager::DEFAULT_PROFILE_NAME));
+                state.set_success(format!("Creating the '{}' profile...", db_manager::DEFAULT_PROFILE_NAME));
                 return db_task(|conn| {
                     let hosts = host_manager::load_hosts_entries();
                     db_manager::create_profile(conn, db_manager::DEFAULT_PROFILE_NAME, &hosts)
                 }, |result| match result {
                     Ok(_) => Message::LoadProfiles,
-                    Err(e) => Message::SaveError(format!("Errore nella creazione del profilo di default: {}", e)),
+                    Err(e) => Message::SaveError(format!("Error creating the default profile: {}", e)),
                 });
             }
 
             let selected = profiles.iter().find(|p| p.is_active).or(profiles.first());
             if let Some(profile) = selected {
-                state.set_success(format!("Profilo caricato: {}", profile.name));
+                state.set_success(format!("Profile loaded: {}", profile.name));
                 state.selected_profile_id = Some(profile.id.clone());
             }
             state.profiles = profiles;
@@ -343,7 +343,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                 return Task::none();
             };
             let entries_to_save = profile.hosts.clone();
-            state.set_success(format!("Profilo attivato: {}", profile.name));
+            state.set_success(format!("Profile activated: {}", profile.name));
 
             for p in &mut state.profiles {
                 p.is_active = p.id == profile_id;
@@ -354,7 +354,7 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
             return Task::batch([
                 write_hosts_task(entries_to_save),
                 db_task(move |conn| db_manager::set_active_profile(conn, &profile_id), |result| {
-                    Message::UpdateDatabaseResult(result.map_err(|e| format!("Errore nell'attivazione del profilo: {}", e)))
+                    Message::UpdateDatabaseResult(result.map_err(|e| format!("Error activating the profile: {}", e)))
                 }),
             ]);
         }
@@ -364,21 +364,21 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::CreateProfileButtonPressed => {
             let name = state.new_profile_name.trim().to_string();
             if name.is_empty() {
-                state.set_error("Il nome del profilo non può essere vuoto.");
+                state.set_error("The profile name cannot be empty.");
                 return Task::none();
             }
             if state.profiles.iter().any(|p| p.name == name) {
-                state.set_error(format!("Un profilo con il nome '{}' esiste già.", name));
+                state.set_error(format!("A profile named '{}' already exists.", name));
                 return Task::none();
             }
 
             let hosts = vec![Line::Entry(Entry::localhost())];
             return db_task(move |conn| db_manager::create_profile(conn, &name, &hosts), |result| {
-                Message::ProfileCreated(result.map_err(|e| format!("Errore nella creazione del profilo: {}", e)))
+                Message::ProfileCreated(result.map_err(|e| format!("Error creating the profile: {}", e)))
             });
         }
         Message::ProfileCreated(Ok(profile)) => {
-            state.set_success(format!("Profilo creato: {}", profile.name));
+            state.set_success(format!("Profile created: {}", profile.name));
             state.new_profile_name.clear();
             state.profiles.push(profile);
         }
@@ -403,26 +403,26 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                 return Task::none();
             };
             if profile.is_default() {
-                state.set_error(format!("Impossibile eliminare il profilo '{}'.", db_manager::DEFAULT_PROFILE_NAME));
+                state.set_error(format!("The '{}' profile cannot be deleted.", db_manager::DEFAULT_PROFILE_NAME));
                 return Task::none();
             }
             if state.selected_profile_id.as_ref() == Some(&profile_id) {
-                state.set_error("Impossibile eliminare il profilo attivo. Seleziona un altro profilo prima di procedere.");
+                state.set_error("The active profile cannot be deleted. Select another profile first.");
                 return Task::none();
             }
 
-            state.set_success("Eliminazione del profilo...");
+            state.set_success("Deleting profile...");
 
             return db_task(move |conn| {
                 db_manager::delete_profile(conn, &profile_id)?;
                 Ok(profile_id)
             }, |result| {
-                Message::ProfileDeleted(result.map_err(|e| format!("Errore nell'eliminazione del profilo: {}", e)))
+                Message::ProfileDeleted(result.map_err(|e| format!("Error deleting the profile: {}", e)))
             });
         }
         Message::ProfileDeleted(Ok(profile_id)) => {
             state.profiles.retain(|p| p.id != profile_id);
-            state.set_success("Profilo eliminato.");
+            state.set_success("Profile deleted.");
         }
         Message::ProfileDeleted(Err(e)) => {
             state.set_error(e);
@@ -430,12 +430,12 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::UpdateDatabaseResult(Ok(_)) => {
         }
         Message::UpdateDatabaseResult(Err(e)) => {
-            state.set_error(format!("Errore di aggiornamento del database: {}", e));
+            state.set_error(format!("Database update error: {}", e));
         }
 
         Message::ExportProfilesButtonPressed => {
             let Some(profile_to_export) = state.selected_profile().cloned() else {
-                state.set_error("Seleziona un profilo da esportare.");
+                state.set_error("Select a profile to export.");
                 return Task::none();
             };
             state.set_success("Apertura finestra di dialogo...");
@@ -446,13 +446,13 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                     .set_file_name(format!("{}.json", profile_to_export.name))
                     .save_file()
                     .await
-                    .ok_or("Operazione di esportazione annullata.")?;
+                    .ok_or("Export cancelled.")?;
 
                 let json_data = serde_json::to_string_pretty(&profile_to_export)
-                    .map_err(|e| format!("Errore di serializzazione: {}", e))?;
+                    .map_err(|e| format!("Serialization error: {}", e))?;
 
                 std::fs::write(file.path(), json_data)
-                    .map_err(|e| format!("Errore di scrittura del file: {}", e))
+                    .map_err(|e| format!("Error writing the file: {}", e))
             }, Message::ExportProfilesResult);
         }
         Message::ImportProfilesButtonPressed => {
@@ -463,28 +463,28 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
                     .add_filter("JSON Profile", &["json"])
                     .pick_file()
                     .await
-                    .ok_or("Operazione di importazione annullata.")?;
+                    .ok_or("Import cancelled.")?;
 
                 let json_data = std::fs::read_to_string(file.path())
-                    .map_err(|e| format!("Errore di lettura del file: {}", e))?;
+                    .map_err(|e| format!("Error reading the file: {}", e))?;
 
                 let imported_profile: Profile = serde_json::from_str(&json_data)
-                    .map_err(|e| format!("Errore di deserializzazione: {}", e))?;
+                    .map_err(|e| format!("Invalid profile file: {}", e))?;
 
                 let conn = db_manager::initialize_db().map_err(|e| e.to_string())?;
                 db_manager::import_profile(&conn, &imported_profile)
-                    .map_err(|e| format!("Errore di importazione: {}", e))
+                    .map_err(|e| format!("Import error: {}", e))
             }, Message::ImportProfilesResult);
         }
         Message::ExportProfilesResult(Ok(_)) => {
-            state.set_success("Profilo esportato con successo!");
+            state.set_success("Profile exported.");
         }
         Message::ExportProfilesResult(Err(e)) => {
             state.set_error(e);
         }
 
         Message::ImportProfilesResult(Ok(profile)) => {
-            state.set_success(format!("Profilo importato con successo: {}", profile.name));
+            state.set_success(format!("Profile imported: {}", profile.name));
             state.profiles.push(profile);
         }
         Message::ImportProfilesResult(Err(e)) => {
@@ -507,14 +507,14 @@ fn update(state: &mut MyApp, message: Message) -> Task<Message> {
         Message::InstallSudoersPressed => {
             state.set_success("Inserisci la password di amministratore nella finestra di sistema...");
             return blocking_task(
-                || privileges::setup_permissions(db_manager::data_dir()).map(|_| "Permessi configurati.".to_string()),
+                || privileges::setup_permissions(db_manager::data_dir()).map(|_| "Permissions set up.".to_string()),
                 Message::SudoersResult,
             );
         }
         Message::RemoveSudoersPressed => {
             state.set_success("Inserisci la password di amministratore nella finestra di sistema...");
             return blocking_task(
-                || privileges::remove_sudoers_rule().map(|_| "Regola sudoers rimossa.".to_string()),
+                || privileges::remove_sudoers_rule().map(|_| "Sudoers rule removed.".to_string()),
                 Message::SudoersResult,
             );
         }

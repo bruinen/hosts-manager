@@ -24,14 +24,14 @@ pub fn view(state: &MyApp) -> Element<'_, Message> {
 fn sidebar(state: &MyApp) -> Element<'_, Message> {
     let title = column![
         text("Hosts Manager").size(18).font(style::SEMIBOLD),
-        text("Profili del file hosts").size(12).style(style::muted_text),
+        text("Hosts file profiles").size(12).style(style::muted_text),
     ]
         .spacing(2);
 
     let profiles = column(state.profiles.iter().map(|p| profile_item(state, p))).spacing(2);
 
     let new_profile = row![
-        text_input("Nuovo profilo…", &state.new_profile_name)
+        text_input("New profile…", &state.new_profile_name)
             .on_input(Message::NewProfileNameChanged)
             .on_submit(Message::CreateProfileButtonPressed)
             .padding(8)
@@ -46,15 +46,15 @@ fn sidebar(state: &MyApp) -> Element<'_, Message> {
         .align_y(Alignment::Center);
 
     let actions = column![
-        sidebar_action("Importa profilo…", Message::ImportProfilesButtonPressed),
-        sidebar_action("Esporta profilo attivo…", Message::ExportProfilesButtonPressed),
+        sidebar_action("Import profile…", Message::ImportProfilesButtonPressed),
+        sidebar_action("Export active profile…", Message::ExportProfilesButtonPressed),
     ]
         .spacing(2);
 
     let content = column![
         title,
         Space::with_height(12),
-        section_label("PROFILI"),
+        section_label("PROFILES"),
         scrollable(profiles).height(Length::Fill),
         new_profile,
         horizontal_rule(1).style(style::separator),
@@ -91,13 +91,13 @@ fn profile_item<'a>(state: &'a MyApp, profile: &'a Profile) -> Element<'a, Messa
     if state.confirm_delete_profile.as_deref() == Some(profile.id.as_str()) {
         return container(
             column![
-                text(format!("Eliminare \"{}\"?", profile.name)).size(13),
+                text(format!("Delete \"{}\"?", profile.name)).size(13),
                 row![
-                    button(text("Elimina").size(12))
+                    button(text("Delete").size(12))
                         .on_press(Message::DeleteProfile(profile.id.clone()))
                         .padding([4, 10])
                         .style(style::danger),
-                    button(text("Annulla").size(12))
+                    button(text("Cancel").size(12))
                         .on_press(Message::CancelDeleteProfile)
                         .padding([4, 10])
                         .style(style::ghost),
@@ -142,20 +142,20 @@ fn profile_item<'a>(state: &'a MyApp, profile: &'a Profile) -> Element<'a, Messa
 
 fn permissions_panel(state: &MyApp) -> Element<'_, Message> {
     let Some(status) = state.hosts_permission else {
-        return text("Verifica dei permessi…").size(12).style(style::muted_text).into();
+        return text("Checking permissions…").size(12).style(style::muted_text).into();
     };
 
     if status.needs_setup() {
         let description = if status.data_dir_writable {
-            "Serve una regola sudoers per scrivere il file hosts senza avviare l'app come amministratore."
+            "A sudoers rule is needed to write the hosts file without running the app as administrator."
         } else {
-            "La cartella dei profili appartiene a root: le modifiche non possono essere salvate."
+            "The profiles folder is owned by root: changes cannot be saved."
         };
         return container(
             column![
-                text("Permessi richiesti").size(13).font(style::SEMIBOLD).style(style::warning_text),
+                text("Permissions required").size(13).font(style::SEMIBOLD).style(style::warning_text),
                 text(description).size(12),
-                button(text("Configura permessi").size(13))
+                button(text("Set up permissions").size(13))
                     .on_press(Message::InstallSudoersPressed)
                     .width(Length::Fill)
                     .padding([6, 12])
@@ -169,11 +169,11 @@ fn permissions_panel(state: &MyApp) -> Element<'_, Message> {
     }
 
     let label = match status.hosts {
-        HostsPermission::Writable => "File hosts scrivibile",
-        _ => "Permessi sudo attivi",
+        HostsPermission::Writable => "Hosts file writable",
+        _ => "Sudo access enabled",
     };
     let remove: Element<Message> = if status.hosts == HostsPermission::Sudo {
-        button(text("Rimuovi").size(12))
+        button(text("Remove").size(12))
             .on_press(Message::RemoveSudoersPressed)
             .padding([3, 8])
             .style(style::ghost)
@@ -196,14 +196,14 @@ fn permissions_panel(state: &MyApp) -> Element<'_, Message> {
 
 fn main_area(state: &MyApp) -> Element<'_, Message> {
     let Some(profile) = state.selected_profile() else {
-        return center(text("Caricamento dei profili…").style(style::muted_text)).into();
+        return center(text("Loading profiles…").style(style::muted_text)).into();
     };
 
     let total = profile.hosts.iter().filter(|l| matches!(l, Line::Entry(_))).count();
     let disabled = profile.hosts.iter().filter(|l| matches!(l, Line::Entry(e) if !e.enabled)).count();
-    let mut summary = format!("{} record", total);
+    let mut summary = format!("{} {}", total, if total == 1 { "entry" } else { "entries" });
     if disabled > 0 {
-        summary.push_str(&format!(" · {} disattivati", disabled));
+        summary.push_str(&format!(" · {} disabled", disabled));
     }
 
     let header = row![
@@ -239,7 +239,7 @@ fn search_box(state: &MyApp) -> Element<'_, Message> {
     };
 
     row![
-        text_input("Cerca hostname…", &state.search_query)
+        text_input("Search hostname…", &state.search_query)
             .on_input(Message::SearchQueryChanged)
             .padding(10)
             .size(14)
@@ -259,45 +259,45 @@ fn add_card(state: &MyApp) -> Element<'_, Message> {
             .padding([5, 14])
             .style(style::segment(state.add_mode == mode))
     };
-    let mode_switch = container(row![segment("Manuale", AddMode::Manual), segment("Da DNS", AddMode::Dns)].spacing(2))
+    let mode_switch = container(row![segment("Manual", AddMode::Manual), segment("From DNS", AddMode::Dns)].spacing(2))
         .padding(3)
         .style(style::segmented);
 
     let fields = match state.add_mode {
         AddMode::Manual => row![
-            text_input("Indirizzo IP", &state.input_ip)
+            text_input("IP address", &state.input_ip)
                 .on_input(Message::InputIpChanged)
                 .on_submit(Message::ManualAddButtonPressed)
                 .font(style::MONO)
                 .padding(10)
                 .width(190)
                 .style(style::input),
-            text_input("Hostname (più nomi separati da spazio)", &state.input_hostname)
+            text_input("Hostname (separate multiple names with spaces)", &state.input_hostname)
                 .on_input(Message::InputHostnameChanged)
                 .on_submit(Message::ManualAddButtonPressed)
                 .padding(10)
                 .width(Length::Fill)
                 .style(style::input),
-            button(text("Aggiungi").size(14))
+            button(text("Add").size(14))
                 .on_press(Message::ManualAddButtonPressed)
                 .padding([10, 18])
                 .style(style::primary),
         ],
         AddMode::Dns => row![
-            text_input("Hostname da risolvere (es: api.example.com)", &state.input_text)
+            text_input("Hostname to resolve (e.g. api.example.com)", &state.input_text)
                 .on_input(Message::InputChanged)
                 .on_submit(Message::DnsLookupButtonPressed)
                 .padding(10)
                 .width(Length::Fill)
                 .style(style::input),
-            text_input("Server DNS (vuoto = sistema)", &state.input_text_dns)
+            text_input("DNS server (empty = system)", &state.input_text_dns)
                 .on_input(Message::InputDNSChanged)
                 .on_submit(Message::DnsLookupButtonPressed)
                 .font(style::MONO)
                 .padding(10)
                 .width(230)
                 .style(style::input),
-            button(text("Risolvi e aggiungi").size(14))
+            button(text("Resolve and add").size(14))
                 .on_press(Message::DnsLookupButtonPressed)
                 .padding([10, 18])
                 .style(style::primary),
@@ -309,7 +309,7 @@ fn add_card(state: &MyApp) -> Element<'_, Message> {
     container(
         column![
             row![
-                text("Aggiungi record").size(15).font(style::SEMIBOLD).width(Length::Fill),
+                text("Add entry").size(15).font(style::SEMIBOLD).width(Length::Fill),
                 mode_switch,
             ]
                 .align_y(Alignment::Center),
@@ -338,15 +338,15 @@ fn entries_card<'a>(state: &'a MyApp, profile: &'a Profile) -> Element<'a, Messa
     let matches = visible.iter().filter(|(_, l)| matches!(l, Line::Entry(_))).count();
 
     let results: Element<Message> = if is_searching {
-        text(format!("{} risultati", matches)).size(13).style(style::muted_text).into()
+        text(format!("{} {}", matches, if matches == 1 { "result" } else { "results" })).size(13).style(style::muted_text).into()
     } else {
         Space::with_width(0).into()
     };
 
     let header = row![
-        text("Record").size(15).font(style::SEMIBOLD).width(Length::Fill),
+        text("Entries").size(15).font(style::SEMIBOLD).width(Length::Fill),
         results,
-        checkbox("Mostra commenti", state.show_comments)
+        checkbox("Show comments", state.show_comments)
             .on_toggle(Message::ShowCommentsToggled)
             .size(15)
             .text_size(13),
@@ -357,7 +357,7 @@ fn entries_card<'a>(state: &'a MyApp, profile: &'a Profile) -> Element<'a, Messa
 
     let columns = row![
         Space::with_width(40),
-        text("INDIRIZZO IP").size(11).font(style::SEMIBOLD).style(style::muted_text).width(170),
+        text("IP ADDRESS").size(11).font(style::SEMIBOLD).style(style::muted_text).width(170),
         text("HOSTNAME").size(11).font(style::SEMIBOLD).style(style::muted_text).width(Length::Fill),
     ]
         .spacing(16)
@@ -365,9 +365,9 @@ fn entries_card<'a>(state: &'a MyApp, profile: &'a Profile) -> Element<'a, Messa
 
     let body: Element<Message> = if visible.is_empty() {
         let message = if is_searching {
-            format!("Nessun record corrisponde a \"{}\".", state.search_query.trim())
+            format!("No entries match \"{}\".", state.search_query.trim())
         } else {
-            "Nessun record. Aggiungine uno dal riquadro qui sopra.".to_string()
+            "No entries yet. Add one using the form above.".to_string()
         };
         center(text(message).size(14).style(style::muted_text)).into()
     } else {
@@ -403,7 +403,7 @@ fn entry_row<'a>(state: &'a MyApp, index: usize, entry: &'a Entry) -> Element<'a
     if state.editing_index == Some(index) {
         return row![
             Space::with_width(40),
-            text_input("Indirizzo IP", &state.editing_ip)
+            text_input("IP address", &state.editing_ip)
                 .on_input(Message::EditIpChanged)
                 .on_submit(Message::SaveEditedEntry)
                 .font(style::MONO)
@@ -416,11 +416,11 @@ fn entry_row<'a>(state: &'a MyApp, index: usize, entry: &'a Entry) -> Element<'a
                 .padding(8)
                 .width(Length::Fill)
                 .style(style::input),
-            button(text("Salva").size(13))
+            button(text("Save").size(13))
                 .on_press(Message::SaveEditedEntry)
                 .padding([6, 14])
                 .style(style::primary),
-            button(text("Annulla").size(13))
+            button(text("Cancel").size(13))
                 .on_press(Message::CancelEdit)
                 .padding([6, 12])
                 .style(style::ghost),
@@ -446,17 +446,17 @@ fn entry_row<'a>(state: &'a MyApp, index: usize, entry: &'a Entry) -> Element<'a
     }
 
     let actions: Element<Message> = if is_system {
-        container(text("di sistema").size(11))
+        container(text("system").size(11))
             .padding([3, 10])
             .style(style::badge)
             .into()
     } else {
         row![
-            button(text("Modifica").size(13))
+            button(text("Edit").size(13))
                 .on_press(Message::EditEntry(index))
                 .padding([5, 10])
                 .style(style::ghost),
-            button(text("Elimina").size(13))
+            button(text("Delete").size(13))
                 .on_press(Message::DeleteEntry(index))
                 .padding([5, 10])
                 .style(style::ghost_danger),

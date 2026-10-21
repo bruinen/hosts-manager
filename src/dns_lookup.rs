@@ -17,7 +17,7 @@ pub async fn resolve_hostname_with_specific_dns(
     } else {
         let dns_ip: IpAddr = dns_server_ip_str
             .parse()
-            .map_err(|e| format!("IP del server DNS non valido '{}': {}", dns_server_ip_str, e))?;
+            .map_err(|e| format!("Invalid DNS server IP '{}': {}", dns_server_ip_str, e))?;
 
         let name_servers = NameServerConfigGroup::from_ips_clear(&[dns_ip], 53, true);
         let config = ResolverConfig::from_parts(None, vec![], name_servers);
@@ -27,11 +27,11 @@ pub async fn resolve_hostname_with_specific_dns(
     let response = resolver
         .lookup_ip(hostname)
         .await
-        .map_err(|e| format!("Impossibile risolvere '{}': {}", hostname, e))?;
+        .map_err(|e| format!("Unable to resolve '{}': {}", hostname, e))?;
 
     response
         .iter()
         .next()
         .map(|ip| ip.to_string())
-        .ok_or_else(|| format!("Nessun indirizzo IP trovato per '{}'", hostname))
+        .ok_or_else(|| format!("No IP address found for '{}'", hostname))
 }

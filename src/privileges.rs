@@ -95,7 +95,7 @@ fn is_data_dir_writable(dir: &Path) -> bool {
 pub fn write_hosts_with_sudo(path: &Path, content: &[u8]) -> io::Result<()> {
     // La regola sudoers consente solo il percorso esatto
     if path != Path::new(HOSTS_PATH) {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Percorso non consentito per sudo"));
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Path not allowed for sudo"));
     }
 
     let mut child = Command::new(SUDO)
@@ -108,7 +108,7 @@ pub fn write_hosts_with_sudo(path: &Path, content: &[u8]) -> io::Result<()> {
     child
         .stdin
         .take()
-        .ok_or_else(|| io::Error::other("stdin di sudo non disponibile"))?
+        .ok_or_else(|| io::Error::other("sudo stdin not available"))?
         .write_all(content)?;
 
     let output = child.wait_with_output()?;
@@ -118,7 +118,7 @@ pub fn write_hosts_with_sudo(path: &Path, content: &[u8]) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "Permesso negato su {}: configura i permessi da 'Gestisci Profili' ({}).",
+                "Permission denied on {}: use 'Set up permissions' in the sidebar ({}).",
                 HOSTS_PATH,
                 String::from_utf8_lossy(&output.stderr).trim()
             ),
@@ -130,7 +130,7 @@ pub fn write_hosts_with_sudo(path: &Path, content: &[u8]) -> io::Result<()> {
 fn current_user() -> io::Result<String> {
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
-        .map_err(|_| io::Error::other("Impossibile determinare l'utente corrente"))?;
+        .map_err(|_| io::Error::other("Unable to determine the current user"))?;
 
     let valid = !user.is_empty()
         && user != "root"
@@ -138,13 +138,13 @@ fn current_user() -> io::Result<String> {
     if valid {
         Ok(user)
     } else {
-        Err(io::Error::other(format!("Nome utente non supportato: '{}'", user)))
+        Err(io::Error::other(format!("Unsupported user name: '{}'", user)))
     }
 }
 
 pub fn sudoers_rule(user: &str) -> String {
     format!(
-        "# Creato da Hosts Manager: consente a {user} di riscrivere {HOSTS_PATH} senza password\n\
+        "# Created by Hosts Manager: allows {user} to rewrite {HOSTS_PATH} without a password\n\
          {user} ALL=(root) NOPASSWD: {TEE} {HOSTS_PATH}\n"
     )
 }
@@ -170,7 +170,7 @@ fn install_script(user: &str) -> String {
 // Restituisce all'utente la cartella dei dati creata da una versione avviata come root
 fn chown_script(user: &str, data_dir: &Path) -> io::Result<String> {
     let dir = data_dir.to_str().filter(|d| !d.contains('\'')).ok_or_else(|| {
-        io::Error::other(format!("Percorso dei dati non supportato: {}", data_dir.display()))
+        io::Error::other(format!("Unsupported data path: {}", data_dir.display()))
     })?;
     Ok(format!("/usr/sbin/chown -R {user} '{dir}'"))
 }
@@ -197,9 +197,9 @@ pub fn setup_permissions(data_dir: &Path) -> Result<(), String> {
 
     let status = check_permissions(data_dir);
     if status.hosts == HostsPermission::Missing {
-        Err("Regola installata ma non attiva: verifica che /etc/sudoers includa /etc/sudoers.d.".to_string())
+        Err("Rule installed but not active: check that /etc/sudoers includes /etc/sudoers.d.".to_string())
     } else if !status.data_dir_writable {
-        Err(format!("La cartella {} non è ancora scrivibile.", data_dir.display()))
+        Err(format!("The folder {} is still not writable.", data_dir.display()))
     } else {
         Ok(())
     }
@@ -217,16 +217,16 @@ fn run_as_admin(script: &str) -> Result<(), String> {
         .arg("-e")
         .arg(format!("do shell script \"{}\" with administrator privileges", escaped))
         .output()
-        .map_err(|e| format!("Impossibile avviare osascript: {}", e))?;
+        .map_err(|e| format!("Unable to run osascript: {}", e))?;
 
     if output.status.success() {
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("-128") {
-            Err("Operazione annullata.".to_string())
+            Err("Cancelled.".to_string())
         } else {
-            Err(format!("Operazione non riuscita: {}", stderr.trim()))
+            Err(format!("Operation failed: {}", stderr.trim()))
         }
     }
 }
@@ -235,7 +235,7 @@ fn run_as_admin(script: &str) -> Result<(), String> {
 fn run_as_admin(_script: &str) -> Result<(), String> {
     let user = current_user().map_err(|e| e.to_string())?;
     Err(format!(
-        "Configurazione automatica disponibile solo su macOS. Aggiungi con `sudo visudo -f {}`:\n{}",
+        "Automatic setup is only available on macOS. Add it with `sudo visudo -f {}`:\n{}",
         SUDOERS_FILE,
         sudoers_rule(&user)
     ))

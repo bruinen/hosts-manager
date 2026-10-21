@@ -28,15 +28,15 @@ impl Entry {
     pub fn new(ip: &str, names: &str) -> Result<Entry, String> {
         let ip = ip.trim();
         if !is_valid_ip(ip) {
-            return Err(format!("IP non valido: '{}'", ip));
+            return Err(format!("Invalid IP address: '{}'", ip));
         }
 
         let mut names = names.split_whitespace().map(str::to_string);
-        let hostname = names.next().ok_or("L'hostname è obbligatorio.")?;
+        let hostname = names.next().ok_or("A hostname is required.")?;
         let aliases: Vec<String> = names.collect();
 
         if let Some(bad) = std::iter::once(&hostname).chain(&aliases).find(|n| n.contains('#')) {
-            return Err(format!("Hostname non valido: '{}'", bad));
+            return Err(format!("Invalid hostname: '{}'", bad));
         }
 
         Ok(Entry {
@@ -82,7 +82,7 @@ pub enum Line {
 
 pub fn load_hosts_entries() -> Vec<Line> {
     let contents = fs::read_to_string(get_hosts_file_path()).unwrap_or_else(|e| {
-        eprintln!("Errore nella lettura del file hosts: {}", e);
+        eprintln!("Error reading the hosts file: {}", e);
         String::new()
     });
     contents.lines().map(parse_line).collect()
@@ -182,7 +182,7 @@ pub fn write_hosts_entries_to_file(entries: &[Line]) -> io::Result<()> {
         }
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Err(io::Error::new(
             e.kind(),
-            format!("Permesso negato su {}: avvia l'app con privilegi di amministratore.", path.display()),
+            format!("Permission denied on {}: run the app as administrator.", path.display()),
         )),
         result => result,
     }
